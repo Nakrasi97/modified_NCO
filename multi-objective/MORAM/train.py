@@ -3,6 +3,7 @@ import time
 from tqdm import tqdm
 import torch
 import math
+import pymoo
 
 from torch.utils.data import DataLoader
 from torch.nn import DataParallel
@@ -11,7 +12,7 @@ from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from utils import move_to
 
-from pymoo.factory import get_performance_indicator
+from pymoo.indicators.hv import HV
 import numpy as np
 
 
@@ -22,7 +23,9 @@ def get_inner_model(model):
 def validate(model, val_dataset, opts):
     # Validate
     print('Validating...')
-    hv_fn = get_performance_indicator("hv", ref_point=np.array([opts.graph_size for _ in range(opts.num_objs)]))
+    
+    ref_point=np.array([opts.graph_size for _ in range(opts.num_objs)])
+    hv_fn = HV(ref_point=ref_point)
 
     cost, all_objs_list = rollout(model, val_dataset, opts)
     print('Time: {:.3f}'.format(time.time() - opts.start_time))
