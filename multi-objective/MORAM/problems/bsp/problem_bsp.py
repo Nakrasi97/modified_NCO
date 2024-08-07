@@ -38,10 +38,10 @@ class BSP(object):
 
         dist = (w_rep * torch.stack([dist1, dist2], dim=-1))
         
-        if scalar_func == "weighted sum":
+        if scalar_func == "weighted-sum":
             return dist.sum(-1).detach(), None, [dist1, dist2]
         
-        elif scalar_func == "Tchebycheff": 
+        elif scalar_func == "tchebycheff": 
             return dist.max(-1)[0].detach(), None, [dist1, dist2]
 
     @staticmethod
