@@ -46,7 +46,7 @@ class BSP(object):
 
     @staticmethod
     def make_dataset(*args, **kwargs):
-        return MOTSPDataset(*args, **kwargs)
+        return BSPDataset(*args, **kwargs)
 
     @staticmethod
     def make_state(*args, **kwargs):
@@ -72,10 +72,10 @@ class BSP(object):
         return beam_search(state, beam_size, propose_expansions)
 
 
-class MOTSPDataset(Dataset):
+class BSPDataset(Dataset):
     
-    def __init__(self, filename=None, size=50, num_samples=1000000, offset=0, distribution=None, correlation=0, num_objs=2, mix_objs=0):
-        super(MOTSPDataset, self).__init__()
+    def __init__(self, filename=None, size=500, num_samples=1000000, offset=0, distribution=None, correlation=0, num_objs=2):
+        super(BSPDataset, self).__init__()
 
         self.data_set = []
         if filename is not None:
@@ -86,8 +86,7 @@ class MOTSPDataset(Dataset):
                 self.data = [torch.FloatTensor(row) for row in (data[offset:offset+num_samples])]
         else:
             self.data = torch.rand((num_samples, size, num_objs*2))
-            if mix_objs > 0:
-                self.data = self.data[:, :, :-mix_objs]
+            
         self.size = len(self.data)
 
     def __len__(self):
@@ -96,32 +95,6 @@ class MOTSPDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-    def load_kroAB(self, size):
-        def read_tsp(path):
-            cor_list = list()
-            with open(path) as f:
-                lines = f.readlines()
-                for line in lines:
-                    info = line.split()
-                    if info[0].isdigit():
-                        cor_list.append(torch.tensor([int(info[1]), int(info[2])]))
-            cor = torch.stack(cor_list, 1)
-            return cor
-
-        def kroAB(size):
-            kroA = read_tsp('./data/kroA{}.tsp'.format(size))
-            kroB = read_tsp('./data/kroB{}.tsp'.format(size))
-
-            data = torch.stack(
-                [(kroA[0] - kroA.min()) / (kroA.max() - kroA.min()),
-                 (kroA[1] - kroA.min()) / (kroA.max() - kroA.min()),
-                 (kroB[0] - kroB.min()) / (kroB.max() - kroB.min()),
-                 (kroB[1] - kroB.min()) / (kroB.max() - kroB.min())],
-                dim=1)
-            return data
-
-        self.data = [kroAB(size)]
-        self.size = len(self.data)
 
     def load_rand_data(self, size, num_samples):
         path = './data/test200_instances_{}_mix3.pt'.format(size)

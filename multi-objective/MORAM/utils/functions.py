@@ -11,9 +11,10 @@ import torch.nn.functional as F
 
 
 def load_problem(name):
-    from problems import MOTSP
+    from problems import MOTSP, BSP
     problem = {
-        'motsp': MOTSP
+        'motsp': MOTSP,
+        'bsp': BSP
     }.get(name, None)
     assert problem is not None, "Currently unsupported problem: {}!".format(name)
     return problem

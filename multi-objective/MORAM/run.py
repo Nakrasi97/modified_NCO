@@ -203,7 +203,6 @@ def run(opts):
             opts.reference_point = gs
             print(opts.num_weights)
             val_dataset.load_rand_data(gs, opts.val_size)
-            # val_dataset.load_kroAB(gs, opts.val_size)
             opts.start_time = time.time()
             _, all_objs_list, NDS, HV, num_NDS = validate(model, val_dataset, opts)
     else:
