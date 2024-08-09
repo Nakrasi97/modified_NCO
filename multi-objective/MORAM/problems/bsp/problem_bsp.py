@@ -2,7 +2,7 @@ from torch.utils.data import Dataset
 import torch
 import os
 import pickle
-from problems.motsp.state_motsp import StateMOTSP
+from problems.bsp.state_bsp import stateBSP
 from utils.beam_search import beam_search
 
 import numpy as np
@@ -50,7 +50,7 @@ class BSP(object):
 
     @staticmethod
     def make_state(*args, **kwargs):
-        return StateMOTSP.initialize(*args, **kwargs)
+        return stateBSP.initialize(*args, **kwargs)
 
     @staticmethod
     def beam_search(input, beam_size, expand_size=None,
@@ -74,7 +74,7 @@ class BSP(object):
 
 class BSPDataset(Dataset):
     
-    def __init__(self, filename=None, size=500, num_samples=1000000, offset=0, distribution=None, correlation=0, num_objs=2):
+    def __init__(self, filename=None, size=500, num_samples=1000000, offset=0, distribution=None, correlation=0, block_features=4):
         super(BSPDataset, self).__init__()
 
         self.data_set = []
@@ -85,7 +85,7 @@ class BSPDataset(Dataset):
                 data = pickle.load(f)
                 self.data = [torch.FloatTensor(row) for row in (data[offset:offset+num_samples])]
         else:
-            self.data = torch.rand((num_samples, size, num_objs*2))
+            self.data = torch.rand((num_samples, size, block_features))
             
         self.size = len(self.data)
 
@@ -96,7 +96,7 @@ class BSPDataset(Dataset):
         return self.data[idx]
 
 
-    def load_rand_data(self, size, num_samples):
+    """ def load_rand_data(self, size, num_samples):
         path = './data/test200_instances_{}_mix3.pt'.format(size)
         if os.path.exists(path):
             pre_data = torch.load(path).permute(0, 2, 1)
@@ -105,3 +105,4 @@ class BSPDataset(Dataset):
             print(self.data.shape)
         else:
             print('Do not exist!', size, num_samples)
+ """
