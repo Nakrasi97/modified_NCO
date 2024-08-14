@@ -1,93 +1,72 @@
 from torch.utils.data import Dataset
 import torch
-import os
-import pickle
-from problems.bsp.state_bsp import stateBSP
+from problems.bsp.state_bsp import StateBlockSelection
 from utils.beam_search import beam_search
+import simpy
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+class Block:
+    def __init__(self, index, size):
+        self.index = index
+        self.size = size
+        self.query_freq = 0
+        self.query_cost = 0
+        self.transmission_count = 0
 
-class BSP(object):
+    def update_query_cost(self, conn_bandwidth):
+        self.query_cost += (self.size * 8) / conn_bandwidth
+        self.query_freq += 1
+        self.transmission_count += 1
 
-    NAME = 'bsp'
+class BlockDataset(Dataset):
+    def __init__(self, num_samples=1000, num_blocks=50, min_size=1, max_size=10, mean_size=5, std_dev=2, duration=60):
+        super(BlockDataset, self).__init__()
 
-    @staticmethod
-    def get_costs(dataset, pi, w, scalar_func):
+        self.num_samples = num_samples
+        self.num_blocks = num_blocks
+        self.data = []
         
-        # Check that tours are valid, i.e. contain 0 to n -1
-        assert (
-            torch.arange(pi.size(1), out=pi.data.new()).view(1, -1).expand_as(pi) ==
-            pi.data.sort(1)[0]
-        ).all(), "Invalid tour"
-
-        # Gather dataset in order of tour
-        # d = dataset.gather(1, pi.unsqueeze(-1).expand_as(dataset))
-        d = dataset.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, dataset.size(1), dataset.size(2))\
-            .gather(1, pi.unsqueeze(-1).expand(-1, -1, dataset.size(-1)))
+        for _ in range(num_samples):
+            blocks = self.generate_blocks(num_blocks, min_size, max_size, mean_size, std_dev)
+            blocks = self.simulate_queries_with_simpy(blocks, duration)
+            block_data = self.extract_block_data(blocks)
+            self.data.append(block_data)
         
-        cor1 = d[..., :2]
-        cor2 = d[..., 2:]
-        dist1 = (cor1[:, 1:] - cor1[:, :-1]).norm(p=2, dim=2).sum(1) + (cor1[:, 0] - cor1[:, -1]).norm(p=2, dim=1)
-        dist2 = (cor2[:, 1:] - cor2[:, :-1]).norm(p=2, dim=2).sum(1) + (cor2[:, 0] - cor2[:, -1]).norm(p=2, dim=1)
-
-        dist1 = dist1.reshape(-1, w.size(0))
-        dist2 = dist2.reshape(-1, w.size(0))
-        w_rep = w.unsqueeze(0).expand(dist1.size(0), -1, -1)
-
-        dist = (w_rep * torch.stack([dist1, dist2], dim=-1))
-        
-        if scalar_func == "weighted-sum":
-            return dist.sum(-1).detach(), None, [dist1, dist2]
-        
-        elif scalar_func == "tchebycheff": 
-            return dist.max(-1)[0].detach(), None, [dist1, dist2]
-
-    @staticmethod
-    def make_dataset(*args, **kwargs):
-        return BSPDataset(*args, **kwargs)
-
-    @staticmethod
-    def make_state(*args, **kwargs):
-        return stateBSP.initialize(*args, **kwargs)
-
-    @staticmethod
-    def beam_search(input, beam_size, expand_size=None,
-                    compress_mask=False, model=None, max_calc_batch_size=4096):
-
-        assert model is not None, "Provide model"
-
-        fixed = model.precompute_fixed(input)
-
-        def propose_expansions(beam):
-            return model.propose_expansions(
-                beam, fixed, expand_size, normalize=True, max_calc_batch_size=max_calc_batch_size
-            )
-
-        state = BSP.make_state(
-            input, visited_dtype=torch.int64 if compress_mask else torch.uint8
-        )
-
-        return beam_search(state, beam_size, propose_expansions)
-
-
-class BSPDataset(Dataset):
-    
-    def __init__(self, filename=None, size=500, num_samples=1000000, offset=0, distribution=None, correlation=0, block_features=4):
-        super(BSPDataset, self).__init__()
-
-        self.data_set = []
-        if filename is not None:
-            assert os.path.splitext(filename)[1] == '.pkl'
-
-            with open(filename, 'rb') as f:
-                data = pickle.load(f)
-                self.data = [torch.FloatTensor(row) for row in (data[offset:offset+num_samples])]
-        else:
-            self.data = torch.rand((num_samples, size, block_features))
-            
         self.size = len(self.data)
+
+    def generate_blocks(self, num_blocks, min_size, max_size, mean_size, std_dev):
+        blocks = []
+
+        for index in range(num_blocks):
+            size = np.clip(round(np.random.normal(mean_size, std_dev), 2), a_min=min_size, a_max=max_size)
+            blocks.append(Block(index, size))
+
+        return blocks
+
+    def simulate_queries_with_simpy(self, blocks, duration):
+        conn_bandwidth = 100  # in Mbps
+        delay = 0.005  # seconds
+
+        def query_process(env, block):
+            while True:
+                block.update_query_cost(conn_bandwidth)
+                yield env.timeout(delay)
+
+        env = simpy.Environment()
+        for block in blocks:
+            env.process(query_process(env, block))
+        
+        env.run(until=duration * 60)
+        return blocks
+
+    def extract_block_data(self, blocks):
+        block_data = []
+        for block in blocks:
+            block_info = [block.query_cost, block.size, block.query_freq, block.transmission_count]
+            block_data.append(block_info)
+        return torch.FloatTensor(block_data)
 
     def __len__(self):
         return self.size
@@ -96,13 +75,49 @@ class BSPDataset(Dataset):
         return self.data[idx]
 
 
-    """ def load_rand_data(self, size, num_samples):
-        path = './data/test200_instances_{}_mix3.pt'.format(size)
-        if os.path.exists(path):
-            pre_data = torch.load(path).permute(0, 2, 1)
-            self.data = pre_data
-            self.size = self.data.size(0)
-            print(self.data.shape)
+
+
+class BlockSelectionProblem(object):
+    NAME = 'block_selection'
+
+    @staticmethod
+    def get_costs(dataset, pi, w, num_objs):
+        # Ensure the tour or selection is valid
+        assert (
+            torch.arange(pi.size(1), out=pi.data.new()).view(1, -1).expand_as(pi) ==
+            pi.data.sort(1)[0]
+        ).all(), "Invalid block selection"
+
+        # Gather dataset in order of selected blocks
+        d = dataset.gather(1, pi.unsqueeze(-1).expand_as(dataset))
+
+        # Assume first column is query cost, second is block size, third is request frequency, fourth is transmission count
+        query_cost = d[..., 0]
+        block_size = d[..., 1]
+        request_freq = d[..., 2]
+        transmission_count = d[..., 3]
+
+        # Calculate the total query cost
+        total_query_cost = query_cost.sum(1)
+        
+        # Calculate the total monetary cost
+        storage_cost = w[:, 0].unsqueeze(1) * block_size.sum(1)
+        request_cost = w[:, 1].unsqueeze(1) * request_freq.sum(1)
+        transmission_cost = w[:, 2].unsqueeze(1) * (block_size * transmission_count).sum(1)
+        total_monetary_cost = storage_cost + request_cost + transmission_cost
+
+        if num_objs == 2:
+            return torch.stack([total_query_cost, total_monetary_cost], dim=-1), None, [total_query_cost, total_monetary_cost]
         else:
-            print('Do not exist!', size, num_samples)
- """
+            raise NotImplementedError("Currently only supports 2 objectives")
+
+    @staticmethod
+    def make_dataset(*args, **kwargs):
+        return BlockDataset(*args, **kwargs)
+
+    @staticmethod
+    def make_state(*args, **kwargs):
+        return StateBlockSelection.initialize(*args, **kwargs)
+
+
+
