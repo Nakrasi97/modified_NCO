@@ -3,7 +3,6 @@ import time
 from tqdm import tqdm
 import torch
 import math
-import pymoo
 
 from torch.utils.data import DataLoader
 from torch.nn import DataParallel
@@ -61,8 +60,7 @@ def rollout(model, dataset, opts):
             cost, _, all_objs, _ = model(
                 move_to(bat, opts.device),
                 opts.w_list,
-                num_objs=opts.num_objs,
-                mix_objs=opts.mix_objs
+                num_objs=opts.num_objs
             )
         return cost.data.cpu(), all_objs
 
