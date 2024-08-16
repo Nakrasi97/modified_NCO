@@ -295,12 +295,12 @@ class PointerNetwork(nn.Module):
         self.decoder.decode_type = decode_type
 
     def forward(self, inputs, eval_tours=None, return_pi=False):
-        batch_size, graph_size, input_dim = inputs.size()
+        batch_size, ledger_size, input_dim = inputs.size()
 
         embedded_inputs = torch.mm(
             inputs.transpose(0, 1).contiguous().view(-1, input_dim),
             self.embedding
-        ).view(graph_size, batch_size, -1)
+        ).view(ledger_size, batch_size, -1)
 
         # query the actor net for the input indices 
         # making up the output, and the pointer attn 

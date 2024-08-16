@@ -156,13 +156,13 @@ class RolloutBaseline(Baseline):
             if len(dataset) != self.opts.val_size:
                 print("Warning: not using saved baseline dataset since val_size does not match")
                 dataset = None
-            elif (dataset[0] if self.problem.NAME == 'tsp' else dataset[0]['loc']).size(0) != self.opts.graph_size:
-                print("Warning: not using saved baseline dataset since graph_size does not match")
+            elif (dataset[0] if self.problem.NAME == 'tsp' else dataset[0]['loc']).size(0) != self.opts.ledger_size:
+                print("Warning: not using saved baseline dataset since ledger_size does not match")
                 dataset = None
 
         if dataset is None:
             self.dataset = self.problem.make_dataset(
-                size=self.opts.graph_size, num_samples=self.opts.val_size, distribution=self.opts.data_distribution)
+                size=self.opts.ledger_size, num_samples=self.opts.val_size, distribution=self.opts.data_distribution)
         else:
             self.dataset = dataset
         print("Evaluating baseline model on evaluation dataset")

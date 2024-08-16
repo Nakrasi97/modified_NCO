@@ -64,7 +64,6 @@ def get_options(args=None):
     parser.add_argument('--lower_bound', type=float, default=0.)
     parser.add_argument('--upper_bound', type=float, default=1.)
     parser.add_argument('--correlation', type=float, default=0.)
-    parser.add_argument('--mix_objs', type=int, default=1)  # 0, 1
     parser.add_argument('--num_objs', type=int, default=2)  # 2, 3
     parser.add_argument('--H', type=int, default=100)  # 100, 12
 
@@ -88,7 +87,7 @@ def get_options(args=None):
     opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S"))
     opts.save_dir = os.path.join(
         opts.output_dir,
-        "{}_{}".format(opts.problem, opts.graph_size),
+        "{}_{}".format(opts.problem, opts.ledger_size),
         opts.run_name
     )
     if opts.bl_warmup_epochs is None:

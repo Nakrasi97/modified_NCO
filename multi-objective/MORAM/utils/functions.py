@@ -174,7 +174,7 @@ def do_batch_rep(v, n):
 
 def sample_many(inner_func, get_cost_func, input, batch_rep=1, iter_rep=1):
     """
-    :param input: (batch_size, graph_size, node_dim) input node features
+    :param input: (batch_size, ledger_size, node_dim) input node features
     :return:
     """
     input = do_batch_rep(input, batch_rep)

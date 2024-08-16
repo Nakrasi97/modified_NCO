@@ -58,16 +58,16 @@ class MultiHeadAttention(nn.Module):
         """
 
         :param q: queries (batch_size, n_query, input_dim)
-        :param h: data (batch_size, graph_size, input_dim)
-        :param mask: mask (batch_size, n_query, graph_size) or viewable as that (i.e. can be 2 dim if n_query == 1)
+        :param h: data (batch_size, ledger_size, input_dim)
+        :param mask: mask (batch_size, n_query, ledger_size) or viewable as that (i.e. can be 2 dim if n_query == 1)
         Mask should contain 1 if attention is not possible (i.e. mask is negative adjacency)
         :return:
         """
         if h is None:
             h = q  # compute self-attention
 
-        # h should be (batch_size, graph_size, input_dim)
-        batch_size, graph_size, input_dim = h.size()
+        # h should be (batch_size, ledger_size, input_dim)
+        batch_size, ledger_size, input_dim = h.size()
         n_query = q.size(1)
         assert q.size(0) == batch_size
         assert q.size(2) == input_dim
@@ -77,21 +77,21 @@ class MultiHeadAttention(nn.Module):
         qflat = q.contiguous().view(-1, input_dim)
 
         # last dimension can be different for keys and values
-        shp = (self.n_heads, batch_size, graph_size, -1)
+        shp = (self.n_heads, batch_size, ledger_size, -1)
         shp_q = (self.n_heads, batch_size, n_query, -1)
         # print(torch.matmul(qflat, self.W_query).shape)
-        # Calculate queries, (n_heads, n_query, graph_size, key/val_size)
+        # Calculate queries, (n_heads, n_query, ledger_size, key/val_size)
         Q = torch.matmul(qflat, self.W_query).view(shp_q)
-        # Calculate keys and values (n_heads, batch_size, graph_size, key/val_size)
+        # Calculate keys and values (n_heads, batch_size, ledger_size, key/val_size)
         K = torch.matmul(hflat, self.W_key).view(shp)
         V = torch.matmul(hflat, self.W_val).view(shp)
 
-        # Calculate compatibility (n_heads, batch_size, n_query, graph_size)
+        # Calculate compatibility (n_heads, batch_size, n_query, ledger_size)
         compatibility = self.norm_factor * torch.matmul(Q, K.transpose(2, 3))
 
         # Optionally apply mask to prevent attention
         if mask is not None:
-            mask = mask.view(1, batch_size, n_query, graph_size).expand_as(compatibility)
+            mask = mask.view(1, batch_size, n_query, ledger_size).expand_as(compatibility)
             compatibility[mask] = -np.inf
 
         attn = torch.softmax(compatibility, dim=-1)
@@ -203,6 +203,6 @@ class GraphAttentionEncoder(nn.Module):
         h = self.layers(h)
 
         return (
-            h,  # (batch_size, graph_size, embed_dim)
+            h,  # (batch_size, ledger_size, embed_dim)
             h.mean(dim=1),  # average to get embedding of graph, (batch_size, embed_dim)
         )

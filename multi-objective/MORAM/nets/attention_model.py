@@ -74,8 +74,7 @@ class AttentionModel(nn.Module):
                  n_heads=8,
                  checkpoint_encoder=False,
                  shrink_size=None,
-                 num_objs=2,
-                 mix_objs=False
+                 num_objs=2
                  ):
         super(AttentionModel, self).__init__()
 
@@ -144,14 +143,6 @@ class AttentionModel(nn.Module):
         # Note n_heads * val_dim == embedding_dim so input to project_out is embedding_dim
         self.project_out = nn.Linear(embedding_dim, embedding_dim, bias=False)
 
-        self.mix_emb = nn.Linear(num_objs * node_dim - mix_objs, embedding_dim)
-
-        self.mix_gat = GraphAttentionEncoder(
-            n_heads=n_heads,
-            embed_dim=embedding_dim,
-            n_layers=self.n_encode_layers,
-            normalization=normalization
-        )
         self.w_net = RoutingNet(num_objs, hidden_dim)
 
     def set_decode_type(self, decode_type, temp=None):
@@ -161,7 +152,7 @@ class AttentionModel(nn.Module):
 
     def forward(self, input, w_list, return_pi=False, num_objs=2, mix_objs=0):
         """
-        :param input: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
+        :param input: (batch_size, ledger_size, node_dim) input node features or dictionary with multiple tensors
         :param return_pi: whether to return the output sequences, this is optional as it is not compatible with
         using DataParallel as the results may be of different lengths on different GPUs
         :return:
@@ -190,10 +181,10 @@ class AttentionModel(nn.Module):
 
         w = torch.stack(w_list, dim=0).to(input.device)
         coef = self.w_net(w)
-        batch_size, graph_size, hidden_dim = emb_list[0].shape
+        batch_size, ledger_size, hidden_dim = emb_list[0].shape
         coef_rep = coef.expand(batch_size, -1, -1)
         temp = torch.stack(emb_list, dim=-1)
-        mixed = torch.einsum('bwo, bgho -> bwgh', coef_rep, temp).reshape(-1, graph_size, hidden_dim)
+        mixed = torch.einsum('bwo, bgho -> bwgh', coef_rep, temp).reshape(-1, ledger_size, hidden_dim)
         # embeddings1 = embeddings1.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, embeddings1.size(1), embeddings1.size(2))
         # embeddings2 = embeddings2.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, embeddings2.size(1), embeddings2.size(2))
 
@@ -351,7 +342,7 @@ class AttentionModel(nn.Module):
 
     def sample_many(self, input, batch_rep=1, iter_rep=1):
         """
-        :param input: (batch_size, graph_size, node_dim) input node features
+        :param input: (batch_size, ledger_size, node_dim) input node features
         :return:
         """
         # Bit ugly but we need to pass the embeddings as well.
@@ -444,7 +435,7 @@ class AttentionModel(nn.Module):
         """
         Returns the context per step, optionally for multiple steps at once (for efficient evaluation of the model)
         
-        :param embeddings: (batch_size, graph_size, embed_dim)
+        :param embeddings: (batch_size, ledger_size, embed_dim)
         :param prev_a: (batch_size, num_steps)
         :param first_a: Only used when num_steps = 1, action of first step or None if first step
         :return: (batch_size, num_steps, context_dim)
@@ -539,7 +530,7 @@ class AttentionModel(nn.Module):
         # Compute the glimpse, rearrange dimensions so the dimensions are (n_heads, batch_size, num_steps, 1, key_size)
         glimpse_Q = query.view(batch_size, num_steps, self.n_heads, 1, key_size).permute(2, 0, 1, 3, 4)
 
-        # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, graph_size)
+        # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, ledger_size)
         compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
@@ -555,7 +546,7 @@ class AttentionModel(nn.Module):
         # Now projecting the glimpse is not needed since this can be absorbed into project_out
         # final_Q = self.project_glimpse(glimpse)
         final_Q = glimpse
-        # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)
+        # Batch matrix multiplication to compute logits (batch_size, num_steps, ledger_size)
         # logits = 'compatibility'
         logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)).squeeze(-2) / math.sqrt(final_Q.size(-1))
 
@@ -592,5 +583,5 @@ class AttentionModel(nn.Module):
         return (
             v.contiguous().view(v.size(0), v.size(1), v.size(2), self.n_heads, -1)
             .expand(v.size(0), v.size(1) if num_steps is None else num_steps, v.size(2), self.n_heads, -1)
-            .permute(3, 0, 1, 2, 4)  # (n_heads, batch_size, num_steps, graph_size, head_dim)
+            .permute(3, 0, 1, 2, 4)  # (n_heads, batch_size, num_steps, ledger_size, head_dim)
         )

@@ -23,7 +23,7 @@ def validate(model, val_dataset, opts):
     # Validate
     print('Validating...')
     
-    ref_point=np.array([opts.graph_size for _ in range(opts.num_objs)])
+    ref_point=np.array([opts.ledger_size for _ in range(opts.num_objs)])
     hv_fn = HV(ref_point=ref_point)
 
     cost, all_objs_list = rollout(model, val_dataset, opts)
@@ -108,12 +108,11 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
 
     # Generate new training data for each epoch
     training_dataset = baseline.wrap_dataset(problem.make_dataset(
-        size=opts.graph_size,
+        size=opts.ledger_size,
         num_samples=opts.epoch_size,
         distribution=opts.data_distribution,
         correlation=opts.correlation,
-        num_objs=opts.num_objs,
-        mix_objs=opts.mix_objs
+        num_objs=opts.num_objs
     ))
     training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=1)
 
@@ -177,7 +176,7 @@ def train_batch(
 ):
     set_decode_type(model, "sampling")
     x = move_to(batch, opts.device)
-    cost, log_likelihood, all_dists, coef = model(x, opts.w_list, num_objs=opts.num_objs, mix_objs=opts.mix_objs)
+    cost, log_likelihood, all_dists, coef = model(x, opts.w_list, num_objs=opts.num_objs)
     log_likelihood = log_likelihood.reshape(-1, opts.num_weights)
 
     obj_tensor = torch.stack(all_dists, dim=2).unsqueeze(1).expand(-1, opts.num_weights, -1, -1)

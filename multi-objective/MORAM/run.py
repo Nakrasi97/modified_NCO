@@ -33,7 +33,7 @@ def run(opts):
     # Optionally configure tensorboard
     tb_logger = None
     if not opts.no_tensorboard:
-        tb_logger = TbLogger(os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.graph_size), opts.run_name))
+        tb_logger = TbLogger(os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.ledger_size), opts.run_name))
     if not opts.eval_only:
         os.makedirs(opts.save_dir)
         # Save arguments so exact configuration can always be found
@@ -48,7 +48,7 @@ def run(opts):
         for w1 in w1_list:
             w = torch.Tensor([w1, 1 - w1])
             temp_tb_logger = TbLogger(
-                os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.graph_size), opts.run_name,
+                os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.ledger_size), opts.run_name,
                              '{:.2f}_{:.2f}'.format(*w))) if not opts.eval_only else None
             opts.w_list.append(w)
             opts.logger_list.append(temp_tb_logger)
@@ -57,7 +57,7 @@ def run(opts):
         opts.num_weights = len(ws)
         for w in ws:
             temp_tb_logger = TbLogger(
-                os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.graph_size), opts.run_name,
+                os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.ledger_size), opts.run_name,
                              '{:.2f}_{:.2f}_{:.2f}'.format(*w))) if not opts.eval_only else None
             opts.w_list.append(torch.Tensor(w))
             opts.logger_list.append(temp_tb_logger)
@@ -96,8 +96,7 @@ def run(opts):
         tanh_clipping=opts.tanh_clipping,
         checkpoint_encoder=opts.checkpoint_encoder,
         shrink_size=opts.shrink_size,
-        num_objs=opts.num_objs,
-        mix_objs=opts.mix_objs
+        num_objs=opts.num_objs
     ).to(opts.device)
     total_params = sum(
         param.numel() for param in model.parameters()
@@ -176,13 +175,12 @@ def run(opts):
 
     # Start the actual training loop
     val_dataset = problem.make_dataset(
-        size=opts.graph_size,
+        size=opts.ledger_size,
         num_samples=opts.val_size,
         filename=opts.val_dataset,
         distribution=opts.data_distribution,
         correlation=opts.correlation,
-        num_objs=opts.num_objs,
-        mix_objs=opts.mix_objs
+        num_objs=opts.num_objs
     )
 
     if opts.resume:
@@ -199,7 +197,7 @@ def run(opts):
 
     if opts.eval_only:
         with torch.no_grad():
-            gs = opts.graph_size
+            gs = opts.ledger_size
             opts.reference_point = gs
             print(opts.num_weights)
             val_dataset.load_rand_data(gs, opts.val_size)
