@@ -266,7 +266,7 @@ class PointerNetwork(nn.Module):
         super(PointerNetwork, self).__init__()
 
         self.problem = problem
-        assert problem.NAME == "tsp", "Pointer Network only supported for TSP"
+        assert problem.NAME == "bsp", "Pointer Network for BSP"
         self.input_dim = 2
 
         self.encoder = Encoder(

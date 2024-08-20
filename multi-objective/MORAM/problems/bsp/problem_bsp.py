@@ -1,7 +1,6 @@
 from torch.utils.data import Dataset
 import torch
 from problems.bsp.state_bsp import StateBlockSelection
-from utils.beam_search import beam_search
 import simpy
 
 import numpy as np
@@ -81,15 +80,20 @@ class BlockSelectionProblem(object):
     NAME = 'block_selection'
 
     @staticmethod
-    def get_costs(dataset, pi, w, num_objs):
-        # Ensure the tour or selection is valid
+    def get_costs(dataset, pi, w, num_objs, max_cap):
+        # Ensure the selection is a valid permutation of 0s and 1s
         assert (
-            torch.arange(pi.size(1), out=pi.data.new()).view(1, -1).expand_as(pi) ==
-            pi.data.sort(1)[0]
-        ).all(), "Invalid block selection"
+            (pi == 0) | (pi == 1)
+        ).all(), "Invalid block selection - must be 0s and 1s only"
+        
+        # Ensure the sum of 1s (selected blocks) does not exceed the number of blocks
+        num_blocks = pi.size(1)
+        assert (
+            pi.sum(1) <= num_blocks
+        ).all(), "Invalid block selection - selection sum exceeds number of blocks"
 
-        # Gather dataset in order of selected blocks
-        d = dataset.gather(1, pi.unsqueeze(-1).expand_as(dataset))
+        # Filter dataset to only include blocks that were not selected (where pi == 0)
+        d = dataset * (1 - pi).unsqueeze(-1).expand_as(dataset)
 
         # Assume first column is query cost, second is block size, third is request frequency, fourth is transmission count
         query_cost = d[..., 0]
@@ -97,10 +101,16 @@ class BlockSelectionProblem(object):
         request_freq = d[..., 2]
         transmission_count = d[..., 3]
 
-        # Calculate the total query cost
+        # Calculate the total block size for non-selected blocks
+        total_block_size = block_size.sum(1)
+
+        # Assert that the total block size does not exceed the maximum capacity
+        assert (total_block_size <= max_cap).all(), "Stored blocks exceed storage capacity"
+
+        # Calculate the total query cost for non-selected blocks
         total_query_cost = query_cost.sum(1)
         
-        # Calculate the total monetary cost
+        # Calculate the total monetary cost for storing the non-selected blocks
         storage_cost = w[:, 0].unsqueeze(1) * block_size.sum(1)
         request_cost = w[:, 1].unsqueeze(1) * request_freq.sum(1)
         transmission_cost = w[:, 2].unsqueeze(1) * (block_size * transmission_count).sum(1)
@@ -111,13 +121,7 @@ class BlockSelectionProblem(object):
         else:
             raise NotImplementedError("Currently only supports 2 objectives")
 
-    @staticmethod
-    def make_dataset(*args, **kwargs):
-        return BlockDataset(*args, **kwargs)
 
-    @staticmethod
-    def make_state(*args, **kwargs):
-        return StateBlockSelection.initialize(*args, **kwargs)
 
 
 

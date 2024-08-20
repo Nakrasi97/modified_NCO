@@ -4,6 +4,7 @@ from torch.utils.checkpoint import checkpoint
 import math
 from typing import NamedTuple
 from utils.tensor_functions import compute_in_batches
+from options import get_options
 
 from nets.graph_encoder import GraphAttentionEncoder
 from torch.nn import DataParallel
@@ -199,8 +200,10 @@ class AttentionModel(nn.Module):
         # mixed = coef1 * mixed_emb + coef2 * mixed
 
         _log_p, pi = self._inner(input, mixed, w)
+        
+        opts = get_options()
 
-        cost, mask, all_dist_list = self.problem.get_costs(input, pi, w, num_objs)
+        cost, mask, all_dist_list = self.problem.get_costs(input, pi, w, num_objs, opts.max_capacity)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
         # DataParallel since sequences can be of different lengths
         ll = self._calc_log_likelihood(_log_p, pi, mask)
