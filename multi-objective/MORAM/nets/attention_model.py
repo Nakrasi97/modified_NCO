@@ -99,8 +99,14 @@ class AttentionModel(nn.Module):
         self.checkpoint_encoder = checkpoint_encoder
         self.shrink_size = shrink_size
 
+        
+        # Define the embedding layer for the block selection problem
+        if problem.NAME == "block_selection":
+            node_dim = 4  # Number of features per block (size, query cost, request frequency, transmission count)
+            step_context_dim = embedding_dim
+            
         # Problem specific context parameters (placeholder and step context dimension)
-        if self.is_vrp or self.is_orienteering or self.is_pctsp:
+        elif self.is_vrp or self.is_orienteering or self.is_pctsp:
             # Embedding of last node + remaining_capacity / remaining length / remaining prize to collect
             step_context_dim = embedding_dim + 1
 

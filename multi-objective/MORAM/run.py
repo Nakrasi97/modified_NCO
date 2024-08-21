@@ -23,27 +23,32 @@ import time
 
 
 def run(opts):
-
+    print("Starting run...")
     # Pretty print the run args
     pp.pprint(vars(opts))
 
     # Set the random seed
+    print("Setting random seed...")
     torch.manual_seed(opts.seed)
 
     # Optionally configure tensorboard
     tb_logger = None
     if not opts.no_tensorboard:
+        print("Setting up TensorBoard logger...")
         tb_logger = TbLogger(os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.ledger_size), opts.run_name))
     if not opts.eval_only:
+        print("Creating output directory...")
         os.makedirs(opts.save_dir)
         # Save arguments so exact configuration can always be found
         with open(os.path.join(opts.save_dir, "args.json"), 'w') as f:
             json.dump(vars(opts), f, indent=True)
 
+    print("Setting up weight list and logger list...")
     opts.logger_list = []
 
     opts.w_list = []
     if opts.num_objs == 2:
+        print("Generating weights for 2 objectives...")
         w1_list = np.linspace(opts.lower_bound, opts.upper_bound, opts.num_weights).tolist()
         for w1 in w1_list:
             w = torch.Tensor([w1, 1 - w1])
@@ -53,6 +58,7 @@ def run(opts):
             opts.w_list.append(w)
             opts.logger_list.append(temp_tb_logger)
     elif opts.num_objs == 3:
+        print("Generating weights for 3 objectives...")
         ws = get_w(m=opts.num_objs, H=opts.H)
         opts.num_weights = len(ws)
         for w in ws:
@@ -66,12 +72,15 @@ def run(opts):
     opts.num_top = round(0.2 * len(opts.w_list) / opts.num_objs)
 
     # Set the device
+    print("Setting up device...")
     opts.device = torch.device("cuda:0" if opts.use_cuda else "cpu")
 
     # Figure out what's the problem
+    print("Loading problem definition...")
     problem = load_problem(opts.problem)
 
     # Load data from load_path
+    print("Loading data from load_path or resume...")
     load_data = {}
     assert opts.load_path is None or opts.resume is None, "Only one of load path and resume can be given"
     load_path = opts.load_path if opts.load_path is not None else opts.resume
@@ -80,6 +89,7 @@ def run(opts):
         load_data = torch_load_cpu(load_path)
 
     # Initialize model
+    print("Initializing model...")
     model_class = {
         'attention': AttentionModel,
         'pointer': PointerNetwork
@@ -98,20 +108,21 @@ def run(opts):
         shrink_size=opts.shrink_size,
         num_objs=opts.num_objs
     ).to(opts.device)
-    total_params = sum(
-        param.numel() for param in model.parameters()
-    )
-    print(total_params)
+    print("Model initialized with total parameters:", sum(param.numel() for param in model.parameters()))
+    
     if opts.use_cuda and torch.cuda.device_count() > 1:
+        print("Using DataParallel for multi-GPU...")
         model = torch.nn.DataParallel(model)
         for i in range(opts.num_weights):
             opts.w_list[i] = torch.cat([opts.w_list[i], opts.w_list[i]], dim=-1)
 
     # Overwrite model parameters by parameters to load
+    print("Overwriting model parameters by parameters to load, if available...")
     model_ = get_inner_model(model)
     model_.load_state_dict({**model_.state_dict(), **load_data.get('model', {})})
 
     # Initialize baseline
+    print("Initializing baseline...")
     if opts.baseline == 'exponential':
         baseline = ExponentialBaseline(opts.exp_beta)
     elif opts.baseline == 'critic' or opts.baseline == 'critic_lstm':
@@ -148,10 +159,12 @@ def run(opts):
         baseline = WarmupBaseline(baseline, opts.bl_warmup_epochs, warmup_exp_beta=opts.exp_beta)
 
     # Load baseline from data, make sure script is called with same type of baseline
+    print("Loading baseline from data, if available...")
     if 'baseline' in load_data:
         baseline.load_state_dict(load_data['baseline'])
 
     # Initialize optimizer
+    print("Initializing optimizer...")
     optimizer = optim.Adam(
         [{'params': model.parameters(), 'lr': opts.lr_model}]
         + (
@@ -162,6 +175,7 @@ def run(opts):
     )
 
     # Load optimizer state
+    print("Loading optimizer state, if available...")
     if 'optimizer' in load_data:
         optimizer.load_state_dict(load_data['optimizer'])
         for state in optimizer.state.values():
@@ -171,19 +185,18 @@ def run(opts):
                     state[k] = v.to(opts.device)
 
     # Initialize learning rate scheduler, decay by lr_decay once per epoch!
+    print("Initializing learning rate scheduler...")
     lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: opts.lr_decay ** epoch)
 
-    # Start the actual training loop
+    # Start training or evaluation
+    print("Creating validation dataset...")
     val_dataset = problem.make_dataset(
-        size=opts.ledger_size,
-        num_samples=opts.val_size,
-        filename=opts.val_dataset,
-        distribution=opts.data_distribution,
-        correlation=opts.correlation,
-        num_objs=opts.num_objs
+        num_blocks=opts.ledger_size,
+        num_samples=opts.val_size
     )
-
+    
     if opts.resume:
+        print("Resuming from checkpoint...")
         epoch_resume = int(os.path.splitext(os.path.split(opts.resume)[-1])[0].split("-")[1])
 
         torch.set_rng_state(load_data['rng_state'])
@@ -196,6 +209,7 @@ def run(opts):
         opts.epoch_start = epoch_resume + 1
 
     if opts.eval_only:
+        print("Evaluating model only...")
         with torch.no_grad():
             gs = opts.ledger_size
             opts.reference_point = gs
@@ -204,6 +218,7 @@ def run(opts):
             opts.start_time = time.time()
             _, all_objs_list, NDS, HV, num_NDS = validate(model, val_dataset, opts)
     else:
+        print("Starting training process...")
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
             train_epoch(
                 model,
@@ -216,7 +231,7 @@ def run(opts):
                 tb_logger,
                 opts
             )
-
+    print("Run completed.")
 
 def perm(sequence):
     l = sequence

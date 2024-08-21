@@ -1,69 +1,89 @@
+from multiprocessing import Pool
 from torch.utils.data import Dataset
 import torch
 from problems.bsp.state_bsp import StateBlockSelection
 import simpy
-
 import numpy as np
-import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 class Block:
     def __init__(self, index, size):
         self.index = index
         self.size = size
+        self.query_cost = 0.0
         self.query_freq = 0
-        self.query_cost = 0
-        self.transmission_count = 0
-
-    def update_query_cost(self, conn_bandwidth):
-        self.query_cost += (self.size * 8) / conn_bandwidth
-        self.query_freq += 1
-        self.transmission_count += 1
+        self.rec_access = 0.0
 
 class BlockDataset(Dataset):
-    def __init__(self, num_samples=1000, num_blocks=50, min_size=1, max_size=10, mean_size=5, std_dev=2, duration=60):
+    def __init__(self, num_blocks, num_samples, min_size=0.1, max_size=2.0, mean_size=1.0, std_dev=0.25, duration=0.5, batch_size=10):
         super(BlockDataset, self).__init__()
 
         self.num_samples = num_samples
         self.num_blocks = num_blocks
+        self.batch_size = batch_size
+        self.duration = duration
+
+        # Initialize the dataset with a progress bar
         self.data = []
-        
-        for _ in range(num_samples):
+        for _ in tqdm(range(num_samples), desc="Creating dataset samples"):
             blocks = self.generate_blocks(num_blocks, min_size, max_size, mean_size, std_dev)
-            blocks = self.simulate_queries_with_simpy(blocks, duration)
+            blocks = self.simulate_queries_with_simpy(blocks)
             block_data = self.extract_block_data(blocks)
             self.data.append(block_data)
-        
+
         self.size = len(self.data)
 
     def generate_blocks(self, num_blocks, min_size, max_size, mean_size, std_dev):
         blocks = []
-
         for index in range(num_blocks):
-            size = np.clip(round(np.random.normal(mean_size, std_dev), 2), a_min=min_size, a_max=max_size)
+            size = np.clip(np.random.normal(mean_size, std_dev), min_size, max_size)
             blocks.append(Block(index, size))
-
         return blocks
 
-    def simulate_queries_with_simpy(self, blocks, duration):
+    def simulate_queries_with_simpy(self, blocks):
         conn_bandwidth = 100  # in Mbps
-        delay = 0.005  # seconds
+        delay = 0.02  # seconds
 
-        def query_process(env, block):
-            while True:
-                block.update_query_cost(conn_bandwidth)
-                yield env.timeout(delay)
+        indices = np.arange(len(blocks))
+        mean = len(indices) / 2
+        std_dev = len(indices) / 6
+
+        # Prepare NumPy arrays for efficient updates
+        block_sizes = np.array([block.size for block in blocks])
+        query_costs = np.zeros(len(blocks))
+        query_freqs = np.zeros(len(blocks))
+
+        def normdist_query_gen(env, duration, batch_size):
+            while env.now < duration * 60:
+                # Generate a batch of normally distributed indices
+                norm_indices = np.random.normal(mean, std_dev, batch_size).astype(int)
+                norm_indices = np.clip(norm_indices, 0, len(indices) - 1)
+                
+                # Vectorized update of the query costs and frequencies
+                for qblock_index in norm_indices:
+                    query_costs[qblock_index] += (block_sizes[qblock_index] * 8) / conn_bandwidth
+                    query_freqs[qblock_index] += 1
+                
+                # Wait for the next batch to be processed
+                yield env.timeout(delay * batch_size)
+            
+            return query_costs, query_freqs
 
         env = simpy.Environment()
-        for block in blocks:
-            env.process(query_process(env, block))
-        
-        env.run(until=duration * 60)
+        env.process(normdist_query_gen(env, self.duration, self.batch_size))
+        env.run(until=self.duration * 60)
+
+        # Assign the results back to the blocks
+        for i, block in enumerate(blocks):
+            block.query_cost = query_costs[i]
+            block.query_freq = query_freqs[i]
+
         return blocks
 
     def extract_block_data(self, blocks):
         block_data = []
         for block in blocks:
-            block_info = [block.query_cost, block.size, block.query_freq, block.transmission_count]
+            block_info = [block.query_cost, block.size, block.query_freq, block.rec_access]
             block_data.append(block_info)
         return torch.FloatTensor(block_data)
 
@@ -76,7 +96,8 @@ class BlockDataset(Dataset):
 
 
 
-class BlockSelectionProblem(object):
+
+class BSP(object):
     NAME = 'block_selection'
 
     @staticmethod
@@ -121,6 +142,13 @@ class BlockSelectionProblem(object):
         else:
             raise NotImplementedError("Currently only supports 2 objectives")
 
+    @staticmethod
+    def make_dataset(*args, **kwargs):
+        return BlockDataset(*args, **kwargs)
+
+    @staticmethod
+    def make_state(*args, **kwargs):
+        return StateBlockSelection.initialize(*args, **kwargs)
 
 
 

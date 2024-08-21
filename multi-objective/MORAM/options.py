@@ -14,7 +14,7 @@ def get_options(args=None):
     parser.add_argument('--max_capacity', type=int, default=100, help="The maximum capacity allowed for blockchain storage")
     parser.add_argument('--batch_size', type=int, default=200, help='Number of instances per batch during training')
     parser.add_argument('--epoch_size', type=int, default=12000, help='Number of instances per epoch during training')  # 50000
-    parser.add_argument('--val_size', type=int, default=200,
+    parser.add_argument('--val_size', type=int, default=1000,
                         help='Number of instances used for reporting validation performance')
     parser.add_argument('--val_dataset', type=str, default=None, help='Dataset file to use for validation')
 
@@ -77,8 +77,8 @@ def get_options(args=None):
                         help='Start at epoch # (relevant for learning rate decay)')
     parser.add_argument('--checkpoint_epochs', type=int, default=50,
                         help='Save checkpoint every n epochs (default 1), 0 to save no checkpoints')
-    parser.add_argument('--load_path', help='Path to load model parameters and optimizer state from')
-    parser.add_argument('--resume', help='Resume from previous checkpoint file')
+    parser.add_argument('--load_path', type=str, help='Path to load model parameters and optimizer state from')
+    parser.add_argument('--resume', type=str, help='Resume from previous checkpoint file')
     parser.add_argument('--no_tensorboard', action='store_true', help='Disable logging TensorBoard files')
     parser.add_argument('--no_progress_bar', action='store_true', help='Disable progress bar')
 
