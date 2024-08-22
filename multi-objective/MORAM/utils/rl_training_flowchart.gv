@@ -1,0 +1,36 @@
+// MORAM Model Training Process with Policy Gradient
+digraph {
+	A [label="Start Training" shape=ellipse]
+	B [label="Initialize Options and Model" shape=box]
+	C [label="Training Loop (Epochs)" shape=box]
+	D [label="Generate Training Data" shape=box]
+	E [label="Set Model to Training Mode" shape=box]
+	F [label="Train Epoch (Batches)" shape=box]
+	G [label="Generate Sequence (Policy)" shape=box]
+	H [label="Evaluate Sequence (Cost Calculation)" shape=box]
+	I [label="Compute Log Likelihood" shape=box]
+	J [label="Compute Reinforce Loss" shape=box]
+	K [label="Compare to Baseline" shape=box]
+	L [label="Update Model Parameters (Backpropagation)" shape=box]
+	M [label=Logging shape=box]
+	N [label=Validation shape=box]
+	O [label="Save Checkpoint" shape=box]
+	P [label="End Training" shape=ellipse]
+	A -> B
+	B -> C
+	C -> D
+	D -> E
+	E -> F
+	F -> G
+	G -> H
+	H -> I
+	I -> J
+	J -> K
+	K -> L
+	L -> M
+	M -> F [label="Next Batch"]
+	F -> N [label="End of Epoch"]
+	N -> O
+	O -> C [label="Next Epoch"]
+	O -> P
+}
