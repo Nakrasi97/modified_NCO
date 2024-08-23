@@ -157,67 +157,51 @@ class AttentionModel(nn.Module):
         if temp is not None:  # Do not change temperature if not provided
             self.temp = temp
 
-    def forward(self, input, w_list, return_pi=False, num_objs=2, mix_objs=0):
+    def forward(self, input, w_list, return_pi=False, num_objs=2):
         """
-        :param input: (batch_size, ledger_size, node_dim) input node features or dictionary with multiple tensors
+        :param input: (batch_size, ledger_size, 4) input node features
         :param return_pi: whether to return the output sequences, this is optional as it is not compatible with
         using DataParallel as the results may be of different lengths on different GPUs
         :return:
         """
 
-        if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
+        # Checkpointing for memory efficiency
+        if self.checkpoint_encoder and self.training:
             emb_list = []
-            for e in range(num_objs-mix_objs):
-                emb_list.append(checkpoint(self.embedder, self._init_embed(input[:, :, e*2:e*2+2]))[0])
-
-            for m in range(mix_objs):
-                obj = torch.cat([input[:, :, -(m+1)][:, :, None], torch.zeros_like(input[:, :, -(m+1)][:, :, None])], dim=-1)
-                emb_list.insert(num_objs-mix_objs, checkpoint(self.embedder, self._init_embed(obj))[0])
-            mixed_emb, _ = checkpoint(self.mix_gat, self.mix_emb(input))
-            emb_list.append(mixed_emb)
+            # Initialize embeddings for the block features
+            emb_list.append(checkpoint(self.embedder, self._init_embed(input[:, :, :]))[0])
         else:
             emb_list = []
-            for e in range(num_objs - mix_objs):
-                emb_list.append(self.embedder(self._init_embed(input[:, :, e * 2:e * 2 + 2]))[0])
-            for m in range(mix_objs):
-                obj = torch.cat(
-                    [input[:, :, -(m + 1)][:, :, None], torch.zeros_like(input[:, :, -(m + 1)][:, :, None])], dim=-1)
-                emb_list.insert(num_objs-mix_objs, self.embedder(self._init_embed(obj))[0])
-            mixed_emb, _ = self.mix_gat(self.mix_emb(input))
-            emb_list.append(mixed_emb)
+            # Initialize embeddings for the block features
+            emb_list.append(self.embedder(self._init_embed(input[:, :, :]))[0])
 
+        # Weight tensor processing
         w = torch.stack(w_list, dim=0).to(input.device)
         coef = self.w_net(w)
+        
+        # Ensure embeddings align with coef
         batch_size, ledger_size, hidden_dim = emb_list[0].shape
         coef_rep = coef.expand(batch_size, -1, -1)
         temp = torch.stack(emb_list, dim=-1)
         mixed = torch.einsum('bwo, bgho -> bwgh', coef_rep, temp).reshape(-1, ledger_size, hidden_dim)
-        # embeddings1 = embeddings1.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, embeddings1.size(1), embeddings1.size(2))
-        # embeddings2 = embeddings2.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, embeddings2.size(1), embeddings2.size(2))
 
-        # coef = self.w_net(w)
-        # coef1 = coef[:, 0]
-        # coef2 = coef[:, 1]
-        # coef1 = coef1[None, :, None, None].expand(input.size(0), -1, input.size(1), embeddings1.size(-1)).reshape(-1, embeddings2.size(1), embeddings2.size(2))
-        # coef2 = coef2[None, :, None, None].expand(input.size(0), -1, input.size(1), embeddings1.size(-1)).reshape(-1,embeddings2.size(1),embeddings2.size(2))
-        #
-        # mixed_emb = mixed_emb.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, embeddings1.size(1), embeddings1.size(2))
-        #
-        # mixed = coef1 * mixed_emb + coef2 * mixed
-
+        # Internal processing
         _log_p, pi = self._inner(input, mixed, w)
         
+        # Retrieve options
         opts = get_options()
 
+        # Cost computation for block selection
         cost, mask, all_dist_list = self.problem.get_costs(input, pi, w, num_objs, opts.max_capacity)
-        # Log likelyhood is calculated within the model since returning it per action does not work well with
-        # DataParallel since sequences can be of different lengths
+        
+        # Log likelihood calculation
         ll = self._calc_log_likelihood(_log_p, pi, mask)
 
         if return_pi:
             return cost, ll, pi
 
         return cost, ll, all_dist_list, coef
+
 
     def beam_search(self, *args, **kwargs):
         return self.problem.beam_search(*args, **kwargs, model=self)

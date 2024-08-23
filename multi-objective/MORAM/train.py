@@ -112,8 +112,15 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
             num_samples=opts.epoch_size
         )
     )
+    
     training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=1)
 
+    
+    # Get the first batch
+    for batch in training_dataloader:
+        print("Shape of a batch:", batch.shape)
+        break  # We just want to check the shape of the first batch
+    
     # Put model in train mode!
     model.train()
     set_decode_type(model, "sampling")
