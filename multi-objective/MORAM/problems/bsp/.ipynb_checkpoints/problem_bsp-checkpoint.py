@@ -101,7 +101,7 @@ class BSP(object):
     NAME = 'block_selection'
 
     @staticmethod
-    def get_costs(dataset, pi, w, num_objs, max_cap):
+    def get_costs(dataset, pi, w, num_objs, max_cap, method='weighted_sum'):
         # Ensure the selection is a valid permutation of 0s and 1s
         assert (
             (pi == 0) | (pi == 1)
@@ -112,35 +112,48 @@ class BSP(object):
         assert (
             pi.sum(1) <= num_blocks
         ).all(), "Invalid block selection - selection sum exceeds number of blocks"
-
-        # Filter dataset to only include blocks that were not selected (where pi == 0)
-        d = dataset * (1 - pi).unsqueeze(-1).expand_as(dataset)
-
+    
+        # Filter dataset to only include blocks that were selected (where pi == 1)
+        d = dataset * pi.unsqueeze(-1).expand_as(dataset)
+    
         # Assume first column is query cost, second is block size, third is request frequency, fourth is transmission count
         query_cost = d[..., 0]
         block_size = d[..., 1]
         request_freq = d[..., 2]
         transmission_count = d[..., 3]
-
-        # Calculate the total block size for non-selected blocks
+    
+        # Calculate the total block size for selected blocks
         total_block_size = block_size.sum(1)
-
+    
         # Assert that the total block size does not exceed the maximum capacity
         assert (total_block_size <= max_cap).all(), "Stored blocks exceed storage capacity"
-
-        # Calculate the total query cost for non-selected blocks
+    
+        # Calculate the total query cost for selected blocks
         total_query_cost = query_cost.sum(1)
         
-        # Calculate the total monetary cost for storing the non-selected blocks
-        storage_cost = w[:, 0].unsqueeze(1) * block_size.sum(1)
+        # Calculate the total monetary cost for storing the selected blocks
+        storage_cost = w[:, 0].unsqueeze(1) * total_block_size
         request_cost = w[:, 1].unsqueeze(1) * request_freq.sum(1)
         transmission_cost = w[:, 2].unsqueeze(1) * (block_size * transmission_count).sum(1)
         total_monetary_cost = storage_cost + request_cost + transmission_cost
-
-        if num_objs == 2:
-            return torch.stack([total_query_cost, total_monetary_cost], dim=-1), None, [total_query_cost, total_monetary_cost]
+    
+        # Stack the objectives
+        stacked_costs = torch.stack([total_query_cost, total_monetary_cost], dim=-1)
+    
+        if method == 'weighted_sum':
+            # Weighted sum
+            weighted_sum = (w.unsqueeze(1) * stacked_costs).sum(-1).detach()
+            return weighted_sum, None, [total_query_cost, total_monetary_cost]
+    
+        elif method == 'tchebycheff':
+            # Tchebycheff scalarization
+            w_rep = w.unsqueeze(0).expand(stacked_costs.size(0), -1, -1)
+            tchebycheff = (w_rep * stacked_costs.unsqueeze(1)).max(-1)[0].detach()
+            return tchebycheff, None, [total_query_cost, total_monetary_cost]
+    
         else:
-            raise NotImplementedError("Currently only supports 2 objectives")
+            raise ValueError("Unknown method: {}. Use 'weighted_sum' or 'tchebycheff'.".format(method))
+
 
     @staticmethod
     def make_dataset(*args, **kwargs):
@@ -149,6 +162,7 @@ class BSP(object):
     @staticmethod
     def make_state(*args, **kwargs):
         return StateBlockSelection.initialize(*args, **kwargs)
+
 
 
 

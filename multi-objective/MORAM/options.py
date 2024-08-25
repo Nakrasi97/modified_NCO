@@ -34,7 +34,7 @@ def get_options(args=None):
     parser.add_argument('--lr_critic', type=float, default=1e-4, help="Set the learning rate for the critic network")
     parser.add_argument('--lr_decay', type=float, default=0.99, help='Learning rate decay per epoch')
     parser.add_argument('--eval_only', action='store_true', help='Set this value to only evaluate model')
-    parser.add_argument('--n_epochs', type=int, default=51, help='The number of epochs to train')
+    parser.add_argument('--n_epochs', type=int, default=10, help='The number of epochs to train')
     parser.add_argument('--seed', type=int, default=1234, help='Random seed to use')
     parser.add_argument('--max_grad_norm', type=float, default=1.0,
                         help='Maximum L2 norm for gradient clipping, default 1.0 (0 to disable clipping)')
@@ -59,7 +59,7 @@ def get_options(args=None):
                         help='Data distribution to use during training, defaults and options depend on problem.')
 
     # MOP
-    parser.add_argument('--num_weights', type=int, default=101)  # 101, 91
+    parser.add_argument('--num_weights', type=int, default=10)  # 101, 91
     parser.add_argument('--reference_point', type=float, default=40)
     parser.add_argument('--num_top', type=int, default=5)
     parser.add_argument('--lower_bound', type=float, default=0.)

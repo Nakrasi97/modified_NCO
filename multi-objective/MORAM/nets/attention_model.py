@@ -198,22 +198,21 @@ class AttentionModel(nn.Module):
         return AttentionModelFixed(mixed_embeddings, fixed_context, *fixed_attention_node_data)
 
     def _inner(self, input, mixed_embeddings, w):
-
         outputs = []
-        sequences = []
-
+        selected_blocks = []
+    
         input_rep = input.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, input.size(1), input.size(2))
         state = self.problem.make_state(input_rep)
-
+    
         # Compute keys, values for the glimpse and keys for the logits once as they can be reused in every step
         fixed = self._precompute(mixed_embeddings)
-
+    
         batch_size = state.ids.size(0)
-
+    
         # Perform decoding steps
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
-
+    
             if self.shrink_size is not None:
                 unfinished = torch.nonzero(state.get_finished() == 0)
                 if len(unfinished) == 0:
@@ -225,31 +224,39 @@ class AttentionModel(nn.Module):
                     # Filter states
                     state = state[unfinished]
                     fixed = fixed[unfinished]
-
+    
             log_p, mask = self._get_log_p(fixed, state, w)
-
-            # Select the indices of the next nodes in the sequences, result (batch_size) long
-            selected = self._select_node(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
-
+    
+            # Select the indices of the next blocks to store, result (batch_size) long
+            selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
+    
             state = state.update(selected)
-
+    
             # Now make log_p, selected desired output size by 'unshrinking'
             if self.shrink_size is not None and state.ids.size(0) < batch_size:
                 log_p_, selected_ = log_p, selected
                 log_p = log_p_.new_zeros(batch_size, *log_p_.size()[1:])
                 selected = selected_.new_zeros(batch_size)
-
+    
                 log_p[state.ids[:, 0]] = log_p_
                 selected[state.ids[:, 0]] = selected_
-
+    
             # Collect output of step
             outputs.append(log_p[:, 0, :])
-            sequences.append(selected)
-
+            selected_blocks.append(selected)
+    
             i += 1
+    
+        # Combine all selected blocks into a final selection mask or list of indices
+        final_selection = torch.stack(selected_blocks, dim=1)  # Shape: (batch_size, num_steps)
+    
+        # Convert this selection into a binary mask where selected blocks are marked with 1
+        # If you want a list of selected block indices instead, you can return final_selection directly
+        selection_mask = torch.zeros_like(log_p).scatter_(1, final_selection, 1)
+    
+        # Return log probabilities and the selection mask
+        return torch.stack(outputs, 1), selection_mask
 
-        # Collected lists, return Tensor
-        return torch.stack(outputs, 1), torch.stack(sequences, 1)
 
     def _calc_log_likelihood(self, _log_p, a, mask):
 
@@ -308,7 +315,7 @@ class AttentionModel(nn.Module):
         # For BSP, the context is simply the embedding of the current block
         return current_embedding
 
-    def _select_node(self, probs, mask):
+    def _select_block(self, probs, mask):
 
         assert (probs == probs).all(), "Probs should not contain any nans"
 

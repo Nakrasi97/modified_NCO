@@ -9,7 +9,7 @@ from torch.nn import DataParallel
 
 from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
-from utils import move_to
+from utils.functions import move_to
 
 from pymoo.indicators.hv import HV
 import numpy as np
@@ -189,7 +189,6 @@ def train_batch(
         tb_logger,
         opts
 ):
-    print(f"Starting train_batch for batch {batch_id}")
     set_decode_type(model, "sampling")
     x = move_to(batch, opts.device)
     cost, log_likelihood, all_dists, coef = model(x, opts.w_list, num_objs=opts.num_objs)
@@ -215,5 +214,4 @@ def train_batch(
         log_values(cost, grad_norms, epoch, batch_id, step,
                    log_likelihood, loss, reinforce_loss, all_dists, coef, tb_logger, opts)
 
-    print(f"Finished train_batch for batch {batch_id}")
 
