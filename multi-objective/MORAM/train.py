@@ -199,7 +199,7 @@ def train_batch(
         w_tensor = torch.stack(opts.w_list, dim=0)[:, :opts.num_objs].unsqueeze(0).unsqueeze(2).expand_as(obj_tensor).to(obj_tensor.device)
     else:
         w_tensor = torch.stack(opts.w_list, dim=0).unsqueeze(0).unsqueeze(2).expand_as(obj_tensor).to(obj_tensor.device)
-
+    
     score = (w_tensor * obj_tensor).sum(-1).sort(-1)[0]
     reinforce_loss = ((cost - score[:, :, :opts.num_top].mean(-1)) * log_likelihood)
     loss = reinforce_loss

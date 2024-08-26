@@ -11,9 +11,9 @@ def get_options(args=None):
     # Data
     parser.add_argument('--problem', default='bsp', help="The problem to solve, default 'bsp'")
     parser.add_argument('--ledger_size', type=int, default=500, help="The size of the blockchain in block height")
-    parser.add_argument('--max_capacity', type=int, default=100, help="The maximum capacity allowed for blockchain storage")
+    parser.add_argument('--max_capacity', type=float, default=100, help="The maximum capacity allowed for blockchain storage")
     parser.add_argument('--batch_size', type=int, default=5, help='Number of instances per batch during training')
-    parser.add_argument('--epoch_size', type=int, default=12000, help='Number of instances per epoch during training')  # 50000
+    parser.add_argument('--epoch_size', type=int, default=2400, help='Number of instances per epoch during training')  # 50000
     parser.add_argument('--val_size', type=int, default=1000,
                         help='Number of instances used for reporting validation performance')
     parser.add_argument('--val_dataset', type=str, default=None, help='Dataset file to use for validation')

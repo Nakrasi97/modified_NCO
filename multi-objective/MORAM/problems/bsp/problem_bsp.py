@@ -1,10 +1,14 @@
 from multiprocessing import Pool
 from torch.utils.data import Dataset
+from options import get_options
 import torch
 from problems.bsp.state_bsp import StateBlockSelection
 import simpy
 import numpy as np
 from tqdm import tqdm
+
+# Retrieve options
+opts = get_options()
 
 class Block:
     def __init__(self, index, size):
@@ -101,7 +105,7 @@ class BSP(object):
     NAME = 'block_selection'
 
     @staticmethod
-    def get_costs(dataset, pi, w, num_objs, max_cap, method='weighted_sum'):
+    def get_costs(dataset, pi, w, num_objs, max_cap=opts.max_capacity, method='weighted_sum'):
         # Ensure the selection is a valid permutation of 0s and 1s
         assert (
             (pi == 0) | (pi == 1)

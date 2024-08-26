@@ -13,6 +13,7 @@ from utils.functions import sample_many
 
 from utils import load_problem
 
+opts = get_options()  # Get options to retrieve max_capacity
 
 def set_decode_type(model, decode_type):
     if isinstance(model, DataParallel):
@@ -129,48 +130,56 @@ class AttentionModel(nn.Module):
 
     def forward(self, input, w_list, return_pi=False, num_objs=2):
         """
+        Forward pass of the AttentionModel. Processes the input data through the encoder and performs the decoding.
+        
         :param input: (batch_size, ledger_size, 4) input node features
-        :param return_pi: whether to return the output sequences, this is optional as it is not compatible with
-        using DataParallel as the results may be of different lengths on different GPUs
-        :return:
+        :param w_list: list of weight vectors for objectives
+        :param return_pi: if True, returns the sequence of selections (indices)
+        :return: calculated costs, log likelihood, and the weighted objectives list
         """
-    
-        # Checkpointing for memory efficiency
         if self.checkpoint_encoder and self.training:
-            emb_list = []
-            # Initialize embeddings for the block features
-            emb_list.append(checkpoint(self.embedder, self.init_embed(input[:, :, :]))[0])
+            # Checkpointing to save memory during training
+            emb_list = [checkpoint(self.embedder, self._init_embed(input))[0]]
         else:
-            emb_list = []
-            # Initialize embeddings for the block features
-            emb_list.append(self.embedder(self.init_embed(input[:, :, :]))[0])
-    
-        # Weight tensor processing
+            emb_list = [self.embedder(self._init_embed(input))[0]]
+
+        # Process weights for objectives
         w = torch.stack(w_list, dim=0).to(input.device)
         coef = self.w_net(w)
-    
-        # Ensure embeddings align with coef
+        
+        # Prepare for mixed embeddings
         batch_size, ledger_size, hidden_dim = emb_list[0].shape
         coef_rep = coef.expand(batch_size, -1, -1)
         temp = torch.stack(emb_list, dim=-1)
-        mixed = torch.einsum('bwo, bgho -> bwgh', coef_rep, temp).reshape(-1, ledger_size, hidden_dim)
-    
-        # Internal processing
+        print(f"Before einsum, coef_rep.shape: {coef_rep.shape}, temp.shape: {temp.shape}")
+        
+        try:
+            mixed = torch.einsum('bwo, bgho -> bwgh', coef_rep, temp).reshape(-1, ledger_size, hidden_dim)
+        except RuntimeError as e:
+            print(f"Error during einsum operation: {e}")
+            raise
+
+        # Call the inner function to perform the decoding and get the selections
         _log_p, pi = self._inner(input, mixed, w)
-    
-        # Retrieve options
-        opts = get_options()
-    
-        # Cost computation for block selection
+
         cost, mask, all_dist_list = self.problem.get_costs(input, pi, w, num_objs, opts.max_capacity)
-    
-        # Log likelihood calculation
+
+        # Calculate the log likelihood
         ll = self._calc_log_likelihood(_log_p, pi, mask)
-    
+
         if return_pi:
             return cost, ll, pi
-    
+
         return cost, ll, all_dist_list, coef
+
+    def _init_embed(self, input):
+        """
+        Initialize embeddings for the input nodes (blocks).
+        
+        :param input: (batch_size, ledger_size, 4) input node features
+        :return: embedded input features
+        """
+        return self.init_embed(input)
 
 
     def _precompute(self, mixed_embeddings, num_steps=1):
@@ -198,64 +207,68 @@ class AttentionModel(nn.Module):
         return AttentionModelFixed(mixed_embeddings, fixed_context, *fixed_attention_node_data)
 
     def _inner(self, input, mixed_embeddings, w):
+        """
+        Internal function to handle the decoding process for block selection.
+        
+        :param input: (batch_size, ledger_size, 4) input node features
+        :param mixed_embeddings: mixed embeddings of the blocks
+        :param w: weight vectors for objectives
+        :return: log probabilities and indices of selected blocks
+        """
+        print("Starting _inner function")
         outputs = []
         selected_blocks = []
     
+        # Expand the input based on the number of weight vectors
         input_rep = input.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, input.size(1), input.size(2))
-        state = self.problem.make_state(input_rep)
+        state = self.problem.make_state(input_rep, max_cap=opts.max_capacity)  # Initialize state with max capacity
     
-        # Compute keys, values for the glimpse and keys for the logits once as they can be reused in every step
+        # Precompute the fixed context for attention
         fixed = self._precompute(mixed_embeddings)
-    
         batch_size = state.ids.size(0)
     
         # Perform decoding steps
+        print("Start decoding")
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
-    
+            print("Decoding step", i)
             if self.shrink_size is not None:
                 unfinished = torch.nonzero(state.get_finished() == 0)
                 if len(unfinished) == 0:
                     break
                 unfinished = unfinished[:, 0]
-                # Check if we can shrink by at least shrink_size and if this leaves at least 16
-                # (otherwise batch norm will not work well and it is inefficient anyway)
                 if 16 <= len(unfinished) <= state.ids.size(0) - self.shrink_size:
-                    # Filter states
+                    # Shrink the state if possible
                     state = state[unfinished]
                     fixed = fixed[unfinished]
     
+            # Get the log probabilities and mask for valid selections
             log_p, mask = self._get_log_p(fixed, state, w)
     
-            # Select the indices of the next blocks to store, result (batch_size) long
-            selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])  # Squeeze out steps dimension
+            # Select the indices of the next blocks to store
+            selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])
     
+            # Update the state with the selected blocks
             state = state.update(selected)
     
-            # Now make log_p, selected desired output size by 'unshrinking'
+            # Adjust log_p and selected to match the original batch size if shrinking was applied
             if self.shrink_size is not None and state.ids.size(0) < batch_size:
                 log_p_, selected_ = log_p, selected
                 log_p = log_p_.new_zeros(batch_size, *log_p_.size()[1:])
                 selected = selected_.new_zeros(batch_size)
-    
                 log_p[state.ids[:, 0]] = log_p_
                 selected[state.ids[:, 0]] = selected_
     
-            # Collect output of step
+            # Collect the log probabilities and selected blocks for this step
             outputs.append(log_p[:, 0, :])
             selected_blocks.append(selected)
     
             i += 1
     
-        # Combine all selected blocks into a final selection mask or list of indices
-        final_selection = torch.stack(selected_blocks, dim=1)  # Shape: (batch_size, num_steps)
-    
-        # Convert this selection into a binary mask where selected blocks are marked with 1
-        # If you want a list of selected block indices instead, you can return final_selection directly
-        selection_mask = torch.zeros_like(log_p).scatter_(1, final_selection, 1)
-    
-        # Return log probabilities and the selection mask
-        return torch.stack(outputs, 1), selection_mask
+        print("Decoding completed")
+        # Return the log probabilities and the selected blocks as a tensor
+        return torch.stack(outputs, 1), torch.stack(selected_blocks, 1)
+
 
 
     def _calc_log_likelihood(self, _log_p, a, mask):
