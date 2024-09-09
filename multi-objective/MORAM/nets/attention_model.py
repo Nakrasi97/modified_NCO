@@ -238,6 +238,7 @@ class AttentionModel(nn.Module):
         # Precompute the fixed context for attention
         fixed = self._precompute(mixed_embeddings)
         batch_size = state.ids.size(0)
+        print(f"Batch size: {batch_size}")
     
         # Perform decoding steps
         print("Start decoding")
