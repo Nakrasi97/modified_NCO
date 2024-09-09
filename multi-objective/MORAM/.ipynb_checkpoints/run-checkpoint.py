@@ -62,6 +62,8 @@ def run(opts):
                              '{:.2f}_{:.2f}'.format(*w))) if not opts.eval_only else None
             opts.w_list.append(w)
             opts.logger_list.append(temp_tb_logger)
+
+        print(f"Weights: {opts.w_list}")
     elif opts.num_objs == 3:
         print("Generating weights for 3 objectives...")
         ws = get_w(m=opts.num_objs, H=opts.H)

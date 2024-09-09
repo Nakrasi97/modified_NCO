@@ -140,12 +140,19 @@ class AttentionModel(nn.Module):
         if self.checkpoint_encoder and self.training:
             # Checkpointing to save memory during training
             emb_list = [checkpoint(self.embedder, self._init_embed(input))[0]]
+            print("Checkpointing...")
+            print(f"Number of elements in embeddings list: {len(emb_list)}")
+            print(f"Shape of tensors in embeddings list: {emb_list[0].shape}")
         else:
             emb_list = [self.embedder(self._init_embed(input))[0]]
+            print(f"Number of elements in embeddings list: {len(emb_list)}")
+            print(f"Shape of tensors in embeddings list: {emb_list[0].shape}")
 
         # Process weights for objectives
         w = torch.stack(w_list, dim=0).to(input.device)
+        print(f"Shape of weights tensor: {w.shape}")
         coef = self.w_net(w)
+        print(f"Shape of weight embeddings tensor: {coef.shape}")
         
         # Prepare for mixed embeddings
         batch_size, ledger_size, hidden_dim = emb_list[0].shape
@@ -159,6 +166,9 @@ class AttentionModel(nn.Module):
             print(f"Error during einsum operation: {e}")
             raise
 
+        # Confirming the shape of the inputs to the decoder
+        print(f"The shape of input: {input.shape}\nThe shape of mixed embeddings:{mixed.shape}\n The shape of weight vector: {w.shape}")
+        
         # Call the inner function to perform the decoding and get the selections
         _log_p, pi = self._inner(input, mixed, w)
 
@@ -220,7 +230,9 @@ class AttentionModel(nn.Module):
         selected_blocks = []
     
         # Expand the input based on the number of weight vectors
+        print(f"Number of weight vectors: {w.size(0)}")
         input_rep = input.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, input.size(1), input.size(2))
+        print(f"Input representation shape: {input_rep.shape}")
         state = self.problem.make_state(input_rep, max_cap=opts.max_capacity)  # Initialize state with max capacity
     
         # Precompute the fixed context for attention
@@ -232,8 +244,12 @@ class AttentionModel(nn.Module):
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
             print("Decoding step", i)
+            print(f"Finished with sequence?: {state.all_finished()}")
+            print(f"Shrink size: {self.shrink_size}")
             if self.shrink_size is not None:
-                unfinished = torch.nonzero(state.get_finished() == 0)
+                print("about to start!!")
+                unfinished = torch.nonzero(state.get_finished())
+                print(f"Shape of unfinished: {unfinished.shape}")
                 if len(unfinished) == 0:
                     break
                 unfinished = unfinished[:, 0]
@@ -243,13 +259,18 @@ class AttentionModel(nn.Module):
                     fixed = fixed[unfinished]
     
             # Get the log probabilities and mask for valid selections
+            print("Get log probabilities and mask")
             log_p, mask = self._get_log_p(fixed, state, w)
     
             # Select the indices of the next blocks to store
+            print("Select indices of next blocks to store")
             selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])
+            print("Selection complete")
     
             # Update the state with the selected blocks
+            print("Update state with selected blocks")
             state = state.update(selected)
+            print("State updated")
     
             # Adjust log_p and selected to match the original batch size if shrinking was applied
             if self.shrink_size is not None and state.ids.size(0) < batch_size:
@@ -258,6 +279,7 @@ class AttentionModel(nn.Module):
                 selected = selected_.new_zeros(batch_size)
                 log_p[state.ids[:, 0]] = log_p_
                 selected[state.ids[:, 0]] = selected_
+                print("Log probabilities adjusted to match original batch size")
     
             # Collect the log probabilities and selected blocks for this step
             outputs.append(log_p[:, 0, :])
@@ -286,21 +308,29 @@ class AttentionModel(nn.Module):
         return log_p.sum(1)
 
     def _get_log_p(self, fixed, state, w, normalize=True):
+        print("I am the troublemaker")
         temp = self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state))
+        print(f"Shape of temp: {temp.shape}")
         # Compute query = context node embedding
+        print(f"Shape of context embedded: {fixed.context_node_projected.shape}")
         query = fixed.context_node_projected + temp
 
         # Compute keys and values for the nodes
         glimpse_K, glimpse_V, logit_K = self._get_attention_node_data(fixed, state)
+        print(f"Glimpse key shape:{glimpse_K.shape}\nGlimpse value shape: {glimpse_V.shape}\n Logit key shape:{logit_K.shape}")
 
         # Compute the mask
         mask = state.get_mask()
+        print(f"What's the mask?: {mask.shape}")
 
         # Compute logits (unnormalized log_p)
+        print(f"Query shape: {query.shape}")
         log_p, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
+        print("Logits computation successful")
 
         if normalize:
             log_p = torch.log_softmax(log_p / self.temp, dim=-1)
+            print("Log probabilities normalized")
 
         assert not torch.isnan(log_p).any()
 
@@ -317,6 +347,7 @@ class AttentionModel(nn.Module):
     
         # Get the current node (block) that is being considered
         current_node = state.get_current_node()  # (batch_size, num_steps)
+        print(f"Current node tensor shape: {current_node.shape}")
         batch_size, num_steps = current_node.size()
     
         # Gather the embedding of the current block
@@ -354,35 +385,72 @@ class AttentionModel(nn.Module):
 
         batch_size, num_steps, embed_dim = query.size()
         key_size = val_size = embed_dim // self.n_heads
+        print(f"Key size: {key_size}")
 
         # Compute the glimpse, rearrange dimensions so the dimensions are (n_heads, batch_size, num_steps, 1, key_size)
         glimpse_Q = query.view(batch_size, num_steps, self.n_heads, 1, key_size).permute(2, 0, 1, 3, 4)
+        print(f"Shape of glimpse: {glimpse_Q.shape}")
 
         # Batch matrix multiplication to compute compatibilities (n_heads, batch_size, num_steps, ledger_size)
         compatibility = torch.matmul(glimpse_Q, glimpse_K.transpose(-2, -1)) / math.sqrt(glimpse_Q.size(-1))
+        print(f"Compatibility shape before mask inner: {compatibility.shape}")
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
-            compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf
+            print(f"Shape of mask: {mask.shape}")
+            
+            # Step 1: Add batch dimension to the mask
+            # Assuming mask is currently [2000, 2000, 500]
+            exp_mask = mask.unsqueeze(0)  # Now the shape is [1, 2000, 2000, 500]
+            
+            # Step 2: If the second 2000 dimension is not necessary, slice or remove it
+            # For example, if you only need the first 2000 dimension, you can slice it:
+            exp_mask = exp_mask[:, :, 0, :]  # Slicing the second 2000 dimension, shape becomes [1, 2000, 500]
+            
+            # Step 3: Add singleton dimensions for broadcasting
+            exp_mask = exp_mask.unsqueeze(2).unsqueeze(3)  # Now the shape is [1, 2000, 1, 1, 500]
+            
+            # Step 4: Expand the mask to match the batch size of 8
+            exp_mask = exp_mask.expand(8, -1, -1, -1, -1)  # Now the shape is [8, 2000, 1, 1, 500]
+            
+            # Now the mask shape matches the compatibility shape and can be used in operations
+
+            #compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf
+            #expanded_mask = mask.expand_as(compatibility)
+            compatibility[exp_mask] = -math.inf
+            print(f"Compatibility shape after mask inner: {compatibility.shape}")
 
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
+        print("Where are you?")
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
+        print(f"Heads shape: {heads.shape}")
 
         # Project to get glimpse/updated context node embedding (batch_size, num_steps, embedding_dim)
         glimpse = self.project_out(
             heads.permute(1, 2, 3, 0, 4).contiguous().view(-1, num_steps, 1, self.n_heads * val_size))
+        print(f"Glimpse shape: {glimpse.shape}")
 
+        
         # Now projecting the glimpse is not needed since this can be absorbed into project_out
         # final_Q = self.project_glimpse(glimpse)
         final_Q = glimpse
         # Batch matrix multiplication to compute logits (batch_size, num_steps, ledger_size)
         # logits = 'compatibility'
         logits = torch.matmul(final_Q, logit_K.transpose(-2, -1)).squeeze(-2) / math.sqrt(final_Q.size(-1))
+        print(f"Logits shape: {logits.shape}")
 
         # From the logits compute the probabilities by clipping, masking and softmax
         if self.tanh_clipping > 0:
             logits = torch.tanh(logits) * self.tanh_clipping
+            print("Logits clipping successful")
         if self.mask_logits:
+            # Step 1: If the second 2000 dimension is not required, reduce or slice it
+            mask = mask[:, 0, :]  # Taking the first slice of the second 2000 dimension, shape becomes [2000, 500]
+            
+            # Step 2: Add a singleton dimension to match the logits shape
+            mask = mask.unsqueeze(1)  # Shape becomes [2000, 1, 500]
+
             logits[mask] = -math.inf
+            print("Masking successful")
 
         return logits, glimpse.squeeze(-2)
 

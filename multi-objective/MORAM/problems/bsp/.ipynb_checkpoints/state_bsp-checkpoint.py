@@ -59,14 +59,25 @@ class StateBlockSelection(NamedTuple):
         :param selected: indices of the selected blocks
         :return: updated state
         """
-        print("Updating StateBlockSelection")
-        prev_a = selected[:, None]
-        self.selected_blocks.append(selected)
-        stored_size = self.stored_size + self.loc.gather(1, prev_a)[:, :, 1]  # Update stored size with block sizes
+        prev_a = selected[:, None, None]  # Shape: [2000, 1, 1]
+        print(f"Shape of prev_a: {prev_a.shape}")
+        
+        # Gather the relevant feature vector for the selected block
+        gathered_loc = self.loc.gather(1, prev_a)  # Shape: [2000, 1, 4]
+        print(f"Shape of gathered_loc: {gathered_loc.shape}")
     
-        selected_ = self.selected_.scatter(-1, prev_a[:, :, None], 1)
+        # Update stored size with the size of the selected block (assuming it's feature index 1)
+        stored_size = self.stored_size + gathered_loc[:, :, 1].squeeze(1)  # Shape: [2000]
+        print(f"Stored blocks size shape: {stored_size.shape}")
     
+        # Update the selected blocks
+        selected_ = self.selected_.scatter(-1, prev_a, 1)
+        print(f"Selected blocks shape: {selected_.shape}")
+    
+        # Return the updated state
         return self._replace(prev_a=prev_a, selected_=selected_, stored_size=stored_size, i=self.i + 1)
+
+
          
         
     def all_finished(self):
@@ -83,8 +94,19 @@ class StateBlockSelection(NamedTuple):
         
         :return: mask tensor
         """
-        # Mask infeasible actions that would exceed the storage capacity
-        return (self.selected > 0) | (self.stored_size + self.loc[..., 1] > self.max_cap)
+        # Check if the block has already been selected
+        mask = (self.selected > 0)  # Selected blocks get True, others get False
+        
+        # Check if adding the block would exceed the storage capacity
+        capacity_violation = (self.stored_size + self.loc[..., 1] > self.max_cap)
+        
+        # Combine the two conditions
+        mask = mask | capacity_violation
+        
+        # Ensure the mask has the correct shape for broadcasting (e.g., [batch_size, 1, 1, ledger_size])
+        # mask = mask.unsqueeze(0).unsqueeze(2)
+        
+        return mask
 
     def construct_solutions(self, actions):
         return actions
