@@ -266,6 +266,7 @@ class AttentionModel(nn.Module):
             # Select the indices of the next blocks to store
             print("Select indices of next blocks to store")
             selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])
+            print(f"Shape of selected:{selected.shape}")
             print("Selection complete")
     
             # Update the state with the selected blocks
@@ -309,7 +310,6 @@ class AttentionModel(nn.Module):
         return log_p.sum(1)
 
     def _get_log_p(self, fixed, state, w, normalize=True):
-        print("I am the troublemaker")
         temp = self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state))
         print(f"Shape of temp: {temp.shape}")
         # Compute query = context node embedding
@@ -356,7 +356,8 @@ class AttentionModel(nn.Module):
             1,
             current_node.unsqueeze(-1).expand(batch_size, num_steps, embeddings.size(-1))
         )  # (batch_size, num_steps, embed_dim)
-    
+        print(f"Shape of current block embedding: {current_embedding.shape}")
+        
         # For BSP, the context is simply the embedding of the current block
         return current_embedding
 

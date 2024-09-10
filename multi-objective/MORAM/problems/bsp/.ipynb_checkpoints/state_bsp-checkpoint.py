@@ -40,7 +40,9 @@ class StateBlockSelection(NamedTuple):
         """
         print("Initializing StateBlockSelection")
         batch_size, n_loc, _ = loc.size()
+        print(n_loc)
         prev_a = torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device)
+        print(f"Shape of prev_a at initialization: {prev_a.shape}")
         return StateBlockSelection(
             loc=loc,
             ids=torch.arange(batch_size, dtype=torch.int64, device=loc.device)[:, None],
@@ -59,11 +61,12 @@ class StateBlockSelection(NamedTuple):
         :param selected: indices of the selected blocks
         :return: updated state
         """
-        prev_a = selected[:, None, None]  # Shape: [2000, 1, 1]
+        print(f"Shape of loc: {self.loc.shape}")
+        prev_a = selected[:, None, None]  # Shape: [batch size, 1]
         print(f"Shape of prev_a: {prev_a.shape}")
         
         # Gather the relevant feature vector for the selected block
-        gathered_loc = self.loc.gather(1, prev_a)  # Shape: [2000, 1, 4]
+        gathered_loc = self.loc.gather(1, prev_a.expand(-1, -1, 4))  # Shape: [batch size, 1, 4]
         print(f"Shape of gathered_loc: {gathered_loc.shape}")
     
         # Update stored size with the size of the selected block (assuming it's feature index 1)
