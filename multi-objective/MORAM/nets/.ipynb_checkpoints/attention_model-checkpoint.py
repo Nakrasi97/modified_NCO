@@ -244,6 +244,8 @@ class AttentionModel(nn.Module):
         print("Start decoding")
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
+            print("-------------------------------------------------------------------------------")
+            print("-------------------------------------------------------------------------------")
             print("Decoding step", i)
             print(f"Finished with sequence?: {state.all_finished()}")
             print(f"Shrink size: {self.shrink_size}")
@@ -286,8 +288,11 @@ class AttentionModel(nn.Module):
             # Collect the log probabilities and selected blocks for this step
             outputs.append(log_p[:, 0, :])
             selected_blocks.append(selected)
+            print("Selected blocks appended")
     
             i += 1
+            print("-------------------------------------------------------------------------------")
+            print("-------------------------------------------------------------------------------")
     
         print("Decoding completed")
         # Return the log probabilities and the selected blocks as a tensor
@@ -422,7 +427,7 @@ class AttentionModel(nn.Module):
             print(f"Compatibility shape after mask inner: {compatibility.shape}")
 
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
-        print("Where are you?")
+        print("Computing attention heads")
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
         print(f"Heads shape: {heads.shape}")
 

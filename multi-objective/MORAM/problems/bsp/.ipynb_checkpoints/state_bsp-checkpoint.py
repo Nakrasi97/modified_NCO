@@ -62,7 +62,8 @@ class StateBlockSelection(NamedTuple):
         :return: updated state
         """
         print(f"Shape of loc: {self.loc.shape}")
-        prev_a = selected[:, None, None]  # Shape: [batch size, 1]
+        print(f"Shape of selected: {selected.shape}")
+        prev_a = selected[:, None, None]  # Shape: [batch size, 1, 1]
         print(f"Shape of prev_a: {prev_a.shape}")
         
         # Gather the relevant feature vector for the selected block
@@ -76,6 +77,8 @@ class StateBlockSelection(NamedTuple):
         # Update the selected blocks
         selected_ = self.selected_.scatter(-1, prev_a, 1)
         print(f"Selected blocks shape: {selected_.shape}")
+
+        prev_a = prev_a.squeeze(-1)
     
         # Return the updated state
         return self._replace(prev_a=prev_a, selected_=selected_, stored_size=stored_size, i=self.i + 1)
