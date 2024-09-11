@@ -106,57 +106,73 @@ class BSP(object):
 
     @staticmethod
     def get_costs(dataset, pi, w, num_objs, max_cap=opts.max_capacity, method='weighted_sum'):
+
+        print(f"The shape of pi is: {pi.shape}")
         # Ensure the selection is a valid permutation of 0s and 1s
-        assert (
-            (pi == 0) | (pi == 1)
-        ).all(), "Invalid block selection - must be 0s and 1s only"
-        
+        assert ((pi == 0) | (pi == 1)).all(), "Invalid block selection - must be 0s and 1s only"
+    
         # Ensure the sum of 1s (selected blocks) does not exceed the number of blocks
         num_blocks = pi.size(1)
-        assert (
-            pi.sum(1) <= num_blocks
-        ).all(), "Invalid block selection - selection sum exceeds number of blocks"
+        assert (pi.sum(1) <= num_blocks).all(), "Invalid block selection - selection sum exceeds number of blocks"
+        
+        # Step 1: Expand the dataset and pi to match the batch and weight vector dimensions
+        batch_size = dataset.size(0)  # Original batch size (e.g., 50)
+        ledger_size = dataset.size(1)  # Number of blocks (e.g., 500)
+        feature_size = dataset.size(2)  # Number of features (4)
     
-        # Filter dataset to only include blocks that were selected (where pi == 1)
-        d = dataset * pi.unsqueeze(-1).expand_as(dataset)
+        num_weight_vectors = w.size(0)  # Number of weight vectors (e.g., 10)
     
-        # Assume first column is query cost, second is block size, third is request frequency, fourth is transmission count
-        query_cost = d[..., 0]
-        block_size = d[..., 1]
-        request_freq = d[..., 2]
-        transmission_count = d[..., 3]
+        # Expand dataset based on the number of weight vectors
+        dataset_expanded = dataset.unsqueeze(1).expand(-1, num_weight_vectors, -1, -1).reshape(-1, ledger_size, feature_size)
+        pi_expanded = pi.unsqueeze(1).expand(-1, num_weight_vectors, -1).reshape(-1, ledger_size)
+    
+        # Step 2: Apply the mask to filter the dataset using the expanded pi
+        pi_expanded_mask = pi_expanded.unsqueeze(-1).expand_as(dataset_expanded)
+        d = dataset_expanded * pi_expanded_mask  # Shape: [batch_size * num_weight_vectors, ledger_size, feature_size]
+    
+        # Step 3: Calculate query cost and monetary cost for each weight vector
+        query_cost = d[..., 0]  # First column is query cost
+        block_size = d[..., 1]  # Second column is block size
+        request_freq = d[..., 2]  # Third column is request frequency
+        transmission_count = d[..., 3]  # Fourth column is transmission count
     
         # Calculate the total block size for selected blocks
-        total_block_size = block_size.sum(1)
+        total_block_size = block_size.sum(1)  # Summing along the blocks dimension
     
-        # Assert that the total block size does not exceed the maximum capacity
+        # Ensure that the total block size does not exceed the maximum capacity
         assert (total_block_size <= max_cap).all(), "Stored blocks exceed storage capacity"
     
-        # Calculate the total query cost for selected blocks
-        total_query_cost = query_cost.sum(1)
-        
-        # Calculate the total monetary cost for storing the selected blocks
-        storage_cost = w[:, 0].unsqueeze(1) * total_block_size
-        request_cost = w[:, 1].unsqueeze(1) * request_freq.sum(1)
-        transmission_cost = w[:, 2].unsqueeze(1) * (block_size * transmission_count).sum(1)
-        total_monetary_cost = storage_cost + request_cost + transmission_cost
+        # Calculate the total query cost for selected blocks (sum over blocks)
+        total_query_cost = query_cost.sum(1)  # Summing along the block dimension
     
-        # Stack the objectives
-        stacked_costs = torch.stack([total_query_cost, total_monetary_cost], dim=-1)
+        # Calculate monetary cost components for selected blocks (sum over relevant features)
+        storage_cost = w[:, 0].unsqueeze(1) * total_block_size  # Weighted storage cost
+        request_cost = w[:, 1].unsqueeze(1) * request_freq.sum(1)  # Weighted request cost
+        transmission_cost = w[:, 2].unsqueeze(1) * (block_size * transmission_count).sum(1)  # Weighted transmission cost
+        total_monetary_cost = storage_cost + request_cost + transmission_cost  # Total monetary cost
     
+        # Reshape total costs back into the original batch structure
+        total_query_cost = total_query_cost.view(batch_size, num_weight_vectors)
+        total_monetary_cost = total_monetary_cost.view(batch_size, num_weight_vectors)
+    
+        # Stack the objectives (query cost and monetary cost)
+        stacked_costs = torch.stack([total_query_cost, total_monetary_cost], dim=-1)  # Shape: [batch_size, num_weight_vectors, 2]
+    
+        # Step 4: Calculate the final cost using the selected method (weighted sum or Tchebycheff)
         if method == 'weighted_sum':
             # Weighted sum
-            weighted_sum = (w.unsqueeze(1) * stacked_costs).sum(-1).detach()
+            weighted_sum = (w.unsqueeze(1) * stacked_costs).sum(-1).detach()  # Sum along the objectives dimension
             return weighted_sum, None, [total_query_cost, total_monetary_cost]
     
         elif method == 'tchebycheff':
             # Tchebycheff scalarization
-            w_rep = w.unsqueeze(0).expand(stacked_costs.size(0), -1, -1)
-            tchebycheff = (w_rep * stacked_costs.unsqueeze(1)).max(-1)[0].detach()
+            w_rep = w.unsqueeze(0).expand(stacked_costs.size(0), -1, -1)  # Shape: [batch_size, num_weight_vectors, num_objs]
+            tchebycheff = (w_rep * stacked_costs.unsqueeze(1)).max(-1)[0].detach()  # Max along the objectives dimension
             return tchebycheff, None, [total_query_cost, total_monetary_cost]
     
         else:
             raise ValueError("Unknown method: {}. Use 'weighted_sum' or 'tchebycheff'.".format(method))
+
 
 
     @staticmethod

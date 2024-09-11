@@ -71,7 +71,8 @@ class StateBlockSelection(NamedTuple):
         print(f"Shape of gathered_loc: {gathered_loc.shape}")
     
         # Update stored size with the size of the selected block (assuming it's feature index 1)
-        stored_size = self.stored_size + gathered_loc[:, :, 1].squeeze(1)  # Shape: [2000]
+        print(f"******stored size before updating with size of selected block: {self.stored_size.shape}")
+        stored_size = self.stored_size + gathered_loc[:, :, 1].squeeze(1).unsqueeze(1)  
         print(f"Stored blocks size shape: {stored_size.shape}")
     
         # Update the selected blocks
@@ -100,11 +101,15 @@ class StateBlockSelection(NamedTuple):
         
         :return: mask tensor
         """
+        print("***Getting mask")
         # Check if the block has already been selected
         mask = (self.selected > 0)  # Selected blocks get True, others get False
-        
+        print("***Checking selected blocks")
+
+        print(f"Before checking capacity violation, stored size shape: {self.stored_size.shape}; block size shape: {self.loc[..., 1].shape}")
         # Check if adding the block would exceed the storage capacity
         capacity_violation = (self.stored_size + self.loc[..., 1] > self.max_cap)
+        print("***Checking capacity violation")
         
         # Combine the two conditions
         mask = mask | capacity_violation

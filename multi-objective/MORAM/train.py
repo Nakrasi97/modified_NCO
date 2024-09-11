@@ -130,24 +130,20 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
     print("Model initialization completed.")
 
     print("Starting training loop...")
-    try:
-        for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
-            print(f"Processing batch {batch_id}...")
-            train_batch(
-                model,
-                optimizer,
-                baseline,
-                epoch,
-                batch_id,
-                step,
-                batch,
-                tb_logger,
-                opts
-            )
-            step += 1
-    except Exception as e:
-        print(f"Error encountered: {e}")
-
+    for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
+        print(f"Processing batch {batch_id}...")
+        train_batch(
+            model,
+            optimizer,
+            baseline,
+            epoch,
+            batch_id,
+            step,
+            batch,
+            tb_logger,
+            opts
+        )
+        step += 1
 
     epoch_duration = time.time() - start_time
     print("Finished epoch {}, took {} s".format(epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))

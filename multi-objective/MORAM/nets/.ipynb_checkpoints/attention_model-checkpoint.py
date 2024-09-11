@@ -12,6 +12,7 @@ from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 
 from utils import load_problem
+from time import sleep
 
 opts = get_options()  # Get options to retrieve max_capacity
 
@@ -104,7 +105,8 @@ class AttentionModel(nn.Module):
             step_context_dim = embedding_dim  # Embedding of first and last node
             node_dim = 4  # Number of features per block (size, query cost, request frequency, transmission count)
 
-        self.init_embed = nn.Linear(node_dim, embedding_dim)
+        self.init_embed_qcobj = nn.Linear(1, embedding_dim)
+        self.init_embed_mcobj = nn.Linear(3, embedding_dim)
 
         self.embedder = GraphAttentionEncoder(
             n_heads=n_heads,
@@ -120,6 +122,15 @@ class AttentionModel(nn.Module):
         assert embedding_dim % n_heads == 0
         # Note n_heads * val_dim == embedding_dim so input to project_out is embedding_dim
         self.project_out = nn.Linear(embedding_dim, embedding_dim, bias=False)
+
+        self.mix_emb = nn.Linear(node_dim, embedding_dim)
+
+        self.mix_gat = GraphAttentionEncoder(
+            n_heads=n_heads,
+            embed_dim=embedding_dim,
+            n_layers=self.n_encode_layers,
+            normalization=normalization
+        )
 
         self.w_net = RoutingNet(num_objs, hidden_dim)
 
@@ -139,12 +150,20 @@ class AttentionModel(nn.Module):
         """
         if self.checkpoint_encoder and self.training:
             # Checkpointing to save memory during training
-            emb_list = [checkpoint(self.embedder, self._init_embed(input))[0]]
+            emb_list = []
+            emb_list.append(checkpoint(self.embedder, self._init_embed(input[:, :, 0:1], "query_cost"))[0])
+            emb_list.append(checkpoint(self.embedder, self._init_embed(input[:, :, 1:4], "monetary_cost"))[0])
+            mixed_emb, _ = checkpoint(self.mix_gat, self.mix_emb(input))
+            emb_list.append(mixed_emb)
             print("Checkpointing...")
             print(f"Number of elements in embeddings list: {len(emb_list)}")
             print(f"Shape of tensors in embeddings list: {emb_list[0].shape}")
         else:
-            emb_list = [self.embedder(self._init_embed(input))[0]]
+            emb_list = []
+            emb_list.append(self.embedder(self._init_embed(input[:, :, 0:1], "query_cost"))[0])
+            emb_list.append(self.embedder(self._init_embed(input[:, :, 1:4], "monetary_cost"))[0])
+            mixed_emb, _ = self.mix_gat(self.mix_emb(input))
+            emb_list.append(mixed_emb)
             print(f"Number of elements in embeddings list: {len(emb_list)}")
             print(f"Shape of tensors in embeddings list: {emb_list[0].shape}")
 
@@ -171,7 +190,8 @@ class AttentionModel(nn.Module):
         
         # Call the inner function to perform the decoding and get the selections
         _log_p, pi = self._inner(input, mixed, w)
-
+        
+        print("Getting costs")
         cost, mask, all_dist_list = self.problem.get_costs(input, pi, w, num_objs, opts.max_capacity)
 
         # Calculate the log likelihood
@@ -182,14 +202,18 @@ class AttentionModel(nn.Module):
 
         return cost, ll, all_dist_list, coef
 
-    def _init_embed(self, input):
+    def _init_embed(self, input, obj):
         """
         Initialize embeddings for the input nodes (blocks).
         
-        :param input: (batch_size, ledger_size, 4) input node features
+        :param input: (batch_size, ledger_size, specific_feature) input node features
         :return: embedded input features
         """
-        return self.init_embed(input)
+        if obj == "query_cost":
+            return self.init_embed_qcobj(input)
+
+        if obj == "monetary_cost":
+            return self.init_embed_mcobj(input)
 
 
     def _precompute(self, mixed_embeddings, num_steps=1):
@@ -227,7 +251,7 @@ class AttentionModel(nn.Module):
         """
         print("Starting _inner function")
         outputs = []
-        selected_blocks = []
+        selection_masks = []  # This will hold the 0s and 1s selection mask for each step
     
         # Expand the input based on the number of weight vectors
         print(f"Number of weight vectors: {w.size(0)}")
@@ -241,11 +265,10 @@ class AttentionModel(nn.Module):
         print(f"Batch size: {batch_size}")
     
         # Perform decoding steps
+        print("-------------------------------------------------------------------------------")
         print("Start decoding")
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
-            print("-------------------------------------------------------------------------------")
-            print("-------------------------------------------------------------------------------")
             print("Decoding step", i)
             print(f"Finished with sequence?: {state.all_finished()}")
             print(f"Shrink size: {self.shrink_size}")
@@ -264,11 +287,16 @@ class AttentionModel(nn.Module):
             # Get the log probabilities and mask for valid selections
             print("Get log probabilities and mask")
             log_p, mask = self._get_log_p(fixed, state, w)
+
+            if mask[:, 0, :].all():
+                print("All actions are masked. Ending decoding process.")
+                break
     
             # Select the indices of the next blocks to store
             print("Select indices of next blocks to store")
             selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])
-            print(f"Shape of selected:{selected.shape}")
+            print(f"Shape of selected blocks: {selected.shape}")
+            print(f"Selected blocks:{selected}")
             print("Selection complete")
     
             # Update the state with the selected blocks
@@ -287,16 +315,21 @@ class AttentionModel(nn.Module):
     
             # Collect the log probabilities and selected blocks for this step
             outputs.append(log_p[:, 0, :])
-            selected_blocks.append(selected)
+            # Create a selection mask of shape (batch_size, ledger_size) initialized to 0s
+            ledger_size = input.size(1)
+            print(f"Ledger size is {ledger_size}")
+            selection_mask = torch.zeros(batch_size, ledger_size, device=selected.device)
+            # For each batch, set the selected block's index to 1
+            selection_mask.scatter_(1, selected.unsqueeze(1), 1)  # Mark selected blocks with 1
+            selection_masks.append(selection_mask)  # Collect the selection mask
             print("Selected blocks appended")
     
             i += 1
-            print("-------------------------------------------------------------------------------")
-            print("-------------------------------------------------------------------------------")
-    
+            
         print("Decoding completed")
+        print("-------------------------------------------------------------------------------")
         # Return the log probabilities and the selected blocks as a tensor
-        return torch.stack(outputs, 1), torch.stack(selected_blocks, 1)
+        return torch.stack(outputs, 1), torch.stack(selection_masks, 1)
 
 
 
@@ -334,11 +367,15 @@ class AttentionModel(nn.Module):
         log_p, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V, logit_K, mask)
         print("Logits computation successful")
 
+        # assert not torch.isnan(log_p).any(), "NaN value detected in logits!"
+        # assert (log_p > 0).all(), "Non-positive value detected in logits!"
+
         if normalize:
+            print(self.temp)
             log_p = torch.log_softmax(log_p / self.temp, dim=-1)
             print("Log probabilities normalized")
 
-        assert not torch.isnan(log_p).any()
+        assert not torch.isnan(log_p).any(), "NaN value detected in normalized log probs!"
 
         return log_p, mask
 
@@ -369,24 +406,35 @@ class AttentionModel(nn.Module):
     def _select_block(self, probs, mask):
 
         assert (probs == probs).all(), "Probs should not contain any nans"
+    
+        # Make sure to mask out probabilities of infeasible actions
+        masked_probs = probs.clone()
+        masked_probs[mask] = 0.0  # Set probabilities of masked actions to 0
 
+        """if (masked_probs.sum(dim=1) == 0).any():
+            print(f"Probabilities before masking: {masked_probs}")
+            print(f"Probabilities after masking: {masked_probs}") 
+            raise RuntimeError("All actions are masked, no valid actions to sample from!")"""
+
+        print(f"This is the decode type: {self.decode_type}")
+    
         if self.decode_type == "greedy":
-            _, selected = probs.max(1)
-            assert not mask.gather(1, selected.unsqueeze(
-                -1)).data.any(), "Decode greedy: infeasible action has maximum probability"
-
+            _, selected = masked_probs.max(1)  # Greedy selection from valid actions
+            assert not mask.gather(1, selected.unsqueeze(-1)).data.any(), "Decode greedy: infeasible action has maximum probability"
+    
         elif self.decode_type == "sampling":
-            selected = probs.multinomial(1).squeeze(1)
-
+            selected = masked_probs.multinomial(1).squeeze(1)  # Sample from masked probabilities
+    
             # Check if sampling went OK, can go wrong due to bug on GPU
-            # See https://discuss.pytorch.org/t/bad-behavior-of-multinomial-function/10232
             while mask.gather(1, selected.unsqueeze(-1)).data.any():
                 print('Sampled bad values, resampling!')
-                selected = probs.multinomial(1).squeeze(1)
-
+                selected = masked_probs.multinomial(1).squeeze(1)  # Resample only from valid actions
+    
         else:
             assert False, "Unknown decode type"
+            
         return selected
+
 
     def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
 
@@ -423,7 +471,7 @@ class AttentionModel(nn.Module):
 
             #compatibility[mask[None, :, :, None, :].expand_as(compatibility)] = -math.inf
             #expanded_mask = mask.expand_as(compatibility)
-            compatibility[exp_mask] = -math.inf
+            compatibility[exp_mask] = -1e9 # Use a large negative number instead of -inf
             print(f"Compatibility shape after mask inner: {compatibility.shape}")
 
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
@@ -456,7 +504,7 @@ class AttentionModel(nn.Module):
             # Step 2: Add a singleton dimension to match the logits shape
             mask = mask.unsqueeze(1)  # Shape becomes [2000, 1, 500]
 
-            logits[mask] = -math.inf
+            logits[mask] = -1e9 # Use a large negative number instead of -inf
             print("Masking successful")
 
         return logits, glimpse.squeeze(-2)
