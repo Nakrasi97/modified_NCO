@@ -178,12 +178,8 @@ class AttentionModel(nn.Module):
         coef_rep = coef.expand(batch_size, -1, -1)
         temp = torch.stack(emb_list, dim=-1)
         print(f"Before einsum, coef_rep.shape: {coef_rep.shape}, temp.shape: {temp.shape}")
-        
-        try:
-            mixed = torch.einsum('bwo, bgho -> bwgh', coef_rep, temp).reshape(-1, ledger_size, hidden_dim)
-        except RuntimeError as e:
-            print(f"Error during einsum operation: {e}")
-            raise
+
+        mixed = torch.einsum('bwo, bgho -> bwgh', coef_rep, temp).reshape(-1, ledger_size, hidden_dim)
 
         # Confirming the shape of the inputs to the decoder
         print(f"The shape of input: {input.shape}\nThe shape of mixed embeddings:{mixed.shape}\n The shape of weight vector: {w.shape}")
@@ -251,7 +247,7 @@ class AttentionModel(nn.Module):
         """
         print("Starting _inner function")
         outputs = []
-        selection_masks = []  # This will hold the 0s and 1s selection mask for each step
+        selected_blocks = []
     
         # Expand the input based on the number of weight vectors
         print(f"Number of weight vectors: {w.size(0)}")
@@ -270,12 +266,9 @@ class AttentionModel(nn.Module):
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
             print("Decoding step", i)
-            print(f"Finished with sequence?: {state.all_finished()}")
-            print(f"Shrink size: {self.shrink_size}")
             if self.shrink_size is not None:
                 print("about to start!!")
                 unfinished = torch.nonzero(state.get_finished())
-                print(f"Shape of unfinished: {unfinished.shape}")
                 if len(unfinished) == 0:
                     break
                 unfinished = unfinished[:, 0]
@@ -290,8 +283,9 @@ class AttentionModel(nn.Module):
 
             if mask[:, 0, :].all():
                 print("All actions are masked. Ending decoding process.")
+                print(f"Local blockchain storage: {state.stored_size}")
                 break
-    
+                
             # Select the indices of the next blocks to store
             print("Select indices of next blocks to store")
             selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])
@@ -315,13 +309,7 @@ class AttentionModel(nn.Module):
     
             # Collect the log probabilities and selected blocks for this step
             outputs.append(log_p[:, 0, :])
-            # Create a selection mask of shape (batch_size, ledger_size) initialized to 0s
-            ledger_size = input.size(1)
-            print(f"Ledger size is {ledger_size}")
-            selection_mask = torch.zeros(batch_size, ledger_size, device=selected.device)
-            # For each batch, set the selected block's index to 1
-            selection_mask.scatter_(1, selected.unsqueeze(1), 1)  # Mark selected blocks with 1
-            selection_masks.append(selection_mask)  # Collect the selection mask
+            selected_blocks.append(selected)
             print("Selected blocks appended")
     
             i += 1
@@ -329,7 +317,7 @@ class AttentionModel(nn.Module):
         print("Decoding completed")
         print("-------------------------------------------------------------------------------")
         # Return the log probabilities and the selected blocks as a tensor
-        return torch.stack(outputs, 1), torch.stack(selection_masks, 1)
+        return torch.stack(outputs, 1), torch.stack(selected_blocks, 1)
 
 
 
@@ -374,6 +362,7 @@ class AttentionModel(nn.Module):
             print(self.temp)
             log_p = torch.log_softmax(log_p / self.temp, dim=-1)
             print("Log probabilities normalized")
+            print(f"Shape of log_p: {log_p.shape}")
 
         assert not torch.isnan(log_p).any(), "NaN value detected in normalized log probs!"
 
@@ -406,17 +395,27 @@ class AttentionModel(nn.Module):
     def _select_block(self, probs, mask):
 
         assert (probs == probs).all(), "Probs should not contain any nans"
-    
+
+        print(f"Shape of probabilities: {probs.shape}")
+        
         # Make sure to mask out probabilities of infeasible actions
         masked_probs = probs.clone()
         masked_probs[mask] = 0.0  # Set probabilities of masked actions to 0
+
+        
+        print(f"Shape of masked probabilities: {masked_probs.shape}")
+        print(f"The sum of masked probabilities: {masked_probs.sum(dim=1)}")
 
         """if (masked_probs.sum(dim=1) == 0).any():
             print(f"Probabilities before masking: {masked_probs}")
             print(f"Probabilities after masking: {masked_probs}") 
             raise RuntimeError("All actions are masked, no valid actions to sample from!")"""
 
-        print(f"This is the decode type: {self.decode_type}")
+        # Check if all probabilities are zero after masking
+        """if masked_probs.sum(dim=1).eq(0).any():
+            print(f"Shape of masked probabilities: {masked_probs.shape}")
+            print(f"Probabilities after masking: {masked_probs}")
+            raise RuntimeError("All actions have zero probabilities after masking!")"""
     
         if self.decode_type == "greedy":
             _, selected = masked_probs.max(1)  # Greedy selection from valid actions

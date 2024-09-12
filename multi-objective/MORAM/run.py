@@ -227,7 +227,6 @@ def run(opts):
     else:
         print("Starting training process...")
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
-            try:
                 train_epoch(
                     model,
                     optimizer,
@@ -239,10 +238,6 @@ def run(opts):
                     tb_logger,
                     opts
                 )
-            except Exception as e:
-                print(f"Error during epoch {epoch}: {e}")
-
-    
     print("Run completed.")
 
 def perm(sequence):

@@ -108,11 +108,9 @@ class BSP(object):
     def get_costs(dataset, pi, w, num_objs, max_cap=opts.max_capacity, method='weighted_sum'):
 
         print(f"The shape of pi is: {pi.shape}")
-        # Ensure the selection is a valid permutation of 0s and 1s
-        assert ((pi == 0) | (pi == 1)).all(), "Invalid block selection - must be 0s and 1s only"
     
         # Ensure the sum of 1s (selected blocks) does not exceed the number of blocks
-        num_blocks = pi.size(1)
+        num_blocks = dataset.size(1)
         assert (pi.sum(1) <= num_blocks).all(), "Invalid block selection - selection sum exceeds number of blocks"
         
         # Step 1: Expand the dataset and pi to match the batch and weight vector dimensions

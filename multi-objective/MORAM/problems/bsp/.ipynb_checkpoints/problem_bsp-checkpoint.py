@@ -108,11 +108,9 @@ class BSP(object):
     def get_costs(dataset, pi, w, num_objs, max_cap=opts.max_capacity, method='weighted_sum'):
 
         print(f"The shape of pi is: {pi.shape}")
-        # Ensure the selection is a valid permutation of 0s and 1s
-        assert ((pi == 0) | (pi == 1)).all(), "Invalid block selection - must be 0s and 1s only"
     
         # Ensure the sum of 1s (selected blocks) does not exceed the number of blocks
-        num_blocks = pi.size(1)
+        num_blocks = dataset.size(1)
         assert (pi.sum(1) <= num_blocks).all(), "Invalid block selection - selection sum exceeds number of blocks"
         
         # Step 1: Expand the dataset and pi to match the batch and weight vector dimensions
@@ -121,7 +119,13 @@ class BSP(object):
         feature_size = dataset.size(2)  # Number of features (4)
     
         num_weight_vectors = w.size(0)  # Number of weight vectors (e.g., 10)
-    
+
+        # Select the last decoding step from pi (shape: [50, 500])
+        pi_last = pi[:, -1, :]  # Shape becomes [50, 500]
+        
+        # Add a singleton dimension to pi_last (so it becomes [50, 500, 1])
+        pi_expanded = pi_last.unsqueeze(-1)  # Shape becomes [50, 500, 1]
+
         # Expand dataset based on the number of weight vectors
         dataset_expanded = dataset.unsqueeze(1).expand(-1, num_weight_vectors, -1, -1).reshape(-1, ledger_size, feature_size)
         pi_expanded = pi.unsqueeze(1).expand(-1, num_weight_vectors, -1).reshape(-1, ledger_size)

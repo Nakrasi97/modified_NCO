@@ -104,11 +104,15 @@ class StateBlockSelection(NamedTuple):
         print("***Getting mask")
         # Check if the block has already been selected
         mask = (self.selected > 0)  # Selected blocks get True, others get False
+        print(f"Shape of mask with only selected: {mask.shape}")
         print("***Checking selected blocks")
 
         print(f"Before checking capacity violation, stored size shape: {self.stored_size.shape}; block size shape: {self.loc[..., 1].shape}")
         # Check if adding the block would exceed the storage capacity
-        capacity_violation = (self.stored_size + self.loc[..., 1] > self.max_cap)
+        capacity_violation = (self.stored_size + self.loc[..., 1] >= self.max_cap)
+        # Ensure capacity_violation has the correct shape by unsqueezing it to match the mask's second dimension
+        capacity_violation = capacity_violation.unsqueeze(1)  # Shape: [50, 1, 500]
+
         print("***Checking capacity violation")
         
         # Combine the two conditions
