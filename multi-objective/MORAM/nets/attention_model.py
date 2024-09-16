@@ -263,6 +263,7 @@ class AttentionModel(nn.Module):
         # Perform decoding steps
         print("-------------------------------------------------------------------------------")
         print("Start decoding")
+        prev_selected = None  # Initialize previous selection tracker
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
             print("Decoding step", i)
@@ -288,15 +289,21 @@ class AttentionModel(nn.Module):
                 
             # Select the indices of the next blocks to store
             print("Select indices of next blocks to store")
-            selected = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])
+            selected, masked_batches = self._select_block(log_p.exp()[:, 0, :], mask[:, 0, :])
             print(f"Shape of selected blocks: {selected.shape}")
             print(f"Selected blocks:{selected}")
             print("Selection complete")
-    
+
+            # Update the previous selection tracker
+            prev_selected = selected.clone()  # Track the most recent valid selection for each batch
+
             # Update the state with the selected blocks
             print("Update state with selected blocks")
-            state = state.update(selected)
+            state = state.update(selected, masked_batches)
             print("State updated")
+
+            # Check current local blockchain storage
+            print(f"Local blockchain storage: {state.stored_size}")
     
             # Adjust log_p and selected to match the original batch size if shrinking was applied
             if self.shrink_size is not None and state.ids.size(0) < batch_size:
@@ -359,7 +366,6 @@ class AttentionModel(nn.Module):
         # assert (log_p > 0).all(), "Non-positive value detected in logits!"
 
         if normalize:
-            print(self.temp)
             log_p = torch.log_softmax(log_p / self.temp, dim=-1)
             print("Log probabilities normalized")
             print(f"Shape of log_p: {log_p.shape}")
@@ -391,39 +397,122 @@ class AttentionModel(nn.Module):
         
         # For BSP, the context is simply the embedding of the current block
         return current_embedding
+        
+    """
+    def _select_block(self, probs, mask, prev_selected=None):
+        
+        assert (probs == probs).all(), "Probs should not contain any NaNs"
+        
+        # Mask invalid actions by setting their probabilities to 0
+        masked_probs = probs.clone()
+        masked_probs[mask] = 0.0  # Set probabilities of masked actions to zero
+    
+        # Check if all actions are masked for any batch
+        all_masked_batches = mask.all(dim=1)
+        
+        # Initialize selected tensor with previous selections or default values (-1)
+        if prev_selected is None:
+            prev_selected = torch.full((masked_probs.size(0),), -1, dtype=torch.long).to(probs.device)
+        
+        # Initialize the selected actions tensor
+        selected = prev_selected.clone()
+    
+        # Handle batches where all actions are masked by using the most recent valid selection
+        if all_masked_batches.any():
+            print(f"Batches with all actions masked: {all_masked_batches.nonzero()}")
+            
+            for batch_idx in all_masked_batches.nonzero(as_tuple=True)[0]:
+                # Repeat the most recent valid selection (from prev_selected)
+                selected[batch_idx] = prev_selected[batch_idx]
+        
+        # For batches that still have valid actions, perform multinomial or greedy sampling
+        valid_batches = ~all_masked_batches
+        if valid_batches.any():
+            if self.decode_type == "greedy":
+                _, selected[valid_batches] = masked_probs[valid_batches].max(1)
+                assert not mask.gather(1, selected.unsqueeze(
+                    -1)).data.any(), "Decode greedy: infeasible action has maximum probability"
+
+            elif self.decode_type == "sampling":
+                selected[valid_batches] = masked_probs[valid_batches].multinomial(1).squeeze(1)
+                # Check if sampling went OK, can go wrong due to bug on GPU
+                # See https://discuss.pytorch.org/t/bad-behavior-of-multinomial-function/10232
+                max_resample_attempts = 10  # Arbitrary number of retries
+                attempts = 0
+                while mask.gather(1, selected.unsqueeze(-1)).data.any():
+                    print('Sampled bad values, resampling!')
+                    selected[valid_batches] = masked_probs[valid_batches].multinomial(1).squeeze(1)
+                    attempts += 1
+                    if attempts >= max_resample_attempts:
+                        print(f"Max resampling attempts reached for batch {batch_idx}")
+                        break
+        
+        return selected, all_masked_batches"""
 
     def _select_block(self, probs, mask):
+        
+        assert (probs == probs).all(), "Probs should not contain any NaNs"
+        
+        # Mask invalid actions by setting their probabilities to 0
+        masked_probs = probs.clone()
+        masked_probs[mask] = 0.0  # Set probabilities of masked actions to zero
+    
+        # Check if all actions are masked for any batch
+        all_masked_batches = mask.all(dim=1)
+        
+        # Initialize the selected actions tensor
+        selected = torch.full((masked_probs.size(0),), -1, dtype=torch.long).to(probs.device)
+    
+        # Handle batches where all actions are masked by marking them as finished (-1)
+        if all_masked_batches.any():
+            print(f"Batches with all actions masked: {all_masked_batches.nonzero()}")
+            # Batches where all actions are masked are already set to -1, so no need to do anything here
+        
+        # For batches that still have valid actions, perform multinomial or greedy sampling
+        valid_batches = ~all_masked_batches
+        if valid_batches.any():
+            if self.decode_type == "greedy":
+                _, selected[valid_batches] = masked_probs[valid_batches].max(1)
+                assert not mask.gather(1, selected.unsqueeze(
+                    -1)[valid_batches]).data.any(), "Decode greedy: infeasible action has maximum probability"
+    
+            elif self.decode_type == "sampling":
+                selected[valid_batches] = masked_probs[valid_batches].multinomial(1).squeeze(1)
+                # Check if sampling went OK, can go wrong due to bug on GPU
+                max_resample_attempts = 10  # Arbitrary number of retries
+                attempts = 0
+                while mask.gather(1, selected.unsqueeze(-1)[valid_batches]).data.any():
+                    print('Sampled bad values, resampling!')
+                    selected[valid_batches] = masked_probs[valid_batches].multinomial(1).squeeze(1)
+                    attempts += 1
+                    if attempts >= max_resample_attempts:
+                        print(f"Max resampling attempts reached for batch {valid_batches.nonzero()}")
+                        break
+    
+        return selected, all_masked_batches
 
+
+
+    
+    """def _select_block(self, probs, mask):
+    
         assert (probs == probs).all(), "Probs should not contain any nans"
-
+    
         print(f"Shape of probabilities: {probs.shape}")
         
         # Make sure to mask out probabilities of infeasible actions
         masked_probs = probs.clone()
         masked_probs[mask] = 0.0  # Set probabilities of masked actions to 0
-
-        
+    
         print(f"Shape of masked probabilities: {masked_probs.shape}")
-        print(f"The sum of masked probabilities: {masked_probs.sum(dim=1)}")
-
-        """if (masked_probs.sum(dim=1) == 0).any():
-            print(f"Probabilities before masking: {masked_probs}")
-            print(f"Probabilities after masking: {masked_probs}") 
-            raise RuntimeError("All actions are masked, no valid actions to sample from!")"""
-
-        # Check if all probabilities are zero after masking
-        """if masked_probs.sum(dim=1).eq(0).any():
-            print(f"Shape of masked probabilities: {masked_probs.shape}")
-            print(f"Probabilities after masking: {masked_probs}")
-            raise RuntimeError("All actions have zero probabilities after masking!")"""
+        print(f"The sum of masked probabilities: {masked_probs.sum(1)}")
     
         if self.decode_type == "greedy":
             _, selected = masked_probs.max(1)  # Greedy selection from valid actions
-            assert not mask.gather(1, selected.unsqueeze(-1)).data.any(), "Decode greedy: infeasible action has maximum probability"
-    
+            
         elif self.decode_type == "sampling":
-            selected = masked_probs.multinomial(1).squeeze(1)  # Sample from masked probabilities
-    
+            selected = masked_probs.multinomial(1).squeeze(1)  # Sample from valid probabilities
+            
             # Check if sampling went OK, can go wrong due to bug on GPU
             while mask.gather(1, selected.unsqueeze(-1)).data.any():
                 print('Sampled bad values, resampling!')
@@ -432,9 +521,9 @@ class AttentionModel(nn.Module):
         else:
             assert False, "Unknown decode type"
             
-        return selected
+        return selected"""
 
-
+    
     def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
 
         batch_size, num_steps, embed_dim = query.size()

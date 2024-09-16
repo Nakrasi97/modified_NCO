@@ -108,33 +108,15 @@ class BSP(object):
     def get_costs(dataset, pi, w, num_objs, max_cap=opts.max_capacity, method='weighted_sum'):
 
         print(f"The shape of pi is: {pi.shape}")
+        BSP.check_duplicates(pi)
     
         # Ensure the sum of 1s (selected blocks) does not exceed the number of blocks
-        num_blocks = dataset.size(1)
-        assert (pi.sum(1) <= num_blocks).all(), "Invalid block selection - selection sum exceeds number of blocks"
-        
-        # Step 1: Expand the dataset and pi to match the batch and weight vector dimensions
-        batch_size = dataset.size(0)  # Original batch size (e.g., 50)
-        ledger_size = dataset.size(1)  # Number of blocks (e.g., 500)
-        feature_size = dataset.size(2)  # Number of features (4)
-    
-        num_weight_vectors = w.size(0)  # Number of weight vectors (e.g., 10)
+        assert (pi.size(1) <= dataset.size(1)), "Invalid block selection - selection sum exceeds number of blocks"
 
-        # Select the last decoding step from pi (shape: [50, 500])
-        pi_last = pi[:, -1, :]  # Shape becomes [50, 500]
-        
-        # Add a singleton dimension to pi_last (so it becomes [50, 500, 1])
-        pi_expanded = pi_last.unsqueeze(-1)  # Shape becomes [50, 500, 1]
+        d = dataset.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, dataset.size(1), dataset.size(2))\
+            .gather(1, pi.unsqueeze(-1).expand(-1, -1, dataset.size(-1)))
 
-        # Expand dataset based on the number of weight vectors
-        dataset_expanded = dataset.unsqueeze(1).expand(-1, num_weight_vectors, -1, -1).reshape(-1, ledger_size, feature_size)
-        pi_expanded = pi.unsqueeze(1).expand(-1, num_weight_vectors, -1).reshape(-1, ledger_size)
-    
-        # Step 2: Apply the mask to filter the dataset using the expanded pi
-        pi_expanded_mask = pi_expanded.unsqueeze(-1).expand_as(dataset_expanded)
-        d = dataset_expanded * pi_expanded_mask  # Shape: [batch_size * num_weight_vectors, ledger_size, feature_size]
-    
-        # Step 3: Calculate query cost and monetary cost for each weight vector
+        # Calculate query cost and monetary cost for each weight vector
         query_cost = d[..., 0]  # First column is query cost
         block_size = d[..., 1]  # Second column is block size
         request_freq = d[..., 2]  # Third column is request frequency
@@ -142,6 +124,7 @@ class BSP(object):
     
         # Calculate the total block size for selected blocks
         total_block_size = block_size.sum(1)  # Summing along the blocks dimension
+        print(total_block_size)
     
         # Ensure that the total block size does not exceed the maximum capacity
         assert (total_block_size <= max_cap).all(), "Stored blocks exceed storage capacity"
@@ -176,6 +159,36 @@ class BSP(object):
     
         else:
             raise ValueError("Unknown method: {}. Use 'weighted_sum' or 'tchebycheff'.".format(method))
+
+    @staticmethod
+    def check_duplicates(pi):
+        """
+        Check for duplicates in the selected blocks across decoding steps (pi).
+        
+        :param pi: Tensor of shape [batch_size, num_steps] representing selected blocks
+        :return: None
+        """
+        batches_with_duplicates = []  # List to track batches with duplicates
+        
+        # Loop over each batch to check for duplicates
+        for batch_idx in range(pi.size(0)):
+            # Get the selected blocks for this batch
+            selected_blocks = pi[batch_idx]
+            
+            # Check for duplicates by comparing the length of unique elements to the total length
+            unique_blocks, counts = torch.unique(selected_blocks, return_counts=True)
+            
+            if (counts > 1).any():
+                # If duplicates are found, add batch index to the list
+                batches_with_duplicates.append(batch_idx)
+        
+        # After the loop, print the list of batches with duplicates
+        if batches_with_duplicates:
+            print(f"Batches with duplicate selections: {batches_with_duplicates}")
+            raise ValueError(f"Duplicate selections found in the following batches: {batches_with_duplicates}")
+        else:
+            print("No duplicate selections found in any batch.")
+
 
 
 
