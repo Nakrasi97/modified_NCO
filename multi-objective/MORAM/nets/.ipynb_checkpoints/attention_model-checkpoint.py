@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 import math
@@ -20,6 +21,37 @@ def set_decode_type(model, decode_type):
     if isinstance(model, DataParallel):
         model = model.module
     model.set_decode_type(decode_type)
+
+
+def log_mask_to_file(mask, step, file_path="mask_log.txt"):
+    """
+    Logs the mask at each decoding step to a file in a readable format.
+    
+    :param mask: Mask tensor to be logged
+    :param step: Decoding step number
+    :param file_path: Path to the log file
+    """
+    # Convert the mask tensor to a NumPy array
+    mask_np = mask.cpu().numpy()  # Move the tensor to CPU if it's on GPU
+    
+    # Remove any singleton dimensions (like the middle 1) for better viewing
+    mask_np = np.squeeze(mask_np)  # Removes dimensions of size 1
+    
+    # Open the file in append mode and write the mask with step information
+    with open(file_path, "a") as f:
+        f.write(f"Decoding step: {step}\n")
+        f.write(f"Mask shape: {mask_np.shape}\n\n")
+        
+        # Write the mask in list format for each batch
+        for batch_idx in range(mask_np.shape[0]):
+            batch_mask = mask_np[batch_idx].tolist()  # Convert to a Python list
+            f.write(f"Batch {batch_idx}: {batch_mask}\n")  # Write the mask as a list
+
+        f.write("\n")  # Newline between steps for readability
+
+
+
+
 
 
 class AttentionModelFixed(NamedTuple):
@@ -261,9 +293,8 @@ class AttentionModel(nn.Module):
         print(f"Batch size: {batch_size}")
     
         # Perform decoding steps
-        print("-------------------------------------------------------------------------------")
         print("Start decoding")
-        prev_selected = None  # Initialize previous selection tracker
+        
         i = 0
         while not (self.shrink_size is None and state.all_finished()):
             print("Decoding step", i)
@@ -282,6 +313,9 @@ class AttentionModel(nn.Module):
             print("Get log probabilities and mask")
             log_p, mask = self._get_log_p(fixed, state, w)
 
+            # Log the mask to file
+            log_mask_to_file(mask, i, file_path="mask_log.txt")
+
             if mask[:, 0, :].all():
                 print("All actions are masked. Ending decoding process.")
                 print(f"Local blockchain storage: {state.stored_size}")
@@ -293,9 +327,6 @@ class AttentionModel(nn.Module):
             print(f"Shape of selected blocks: {selected.shape}")
             print(f"Selected blocks:{selected}")
             print("Selection complete")
-
-            # Update the previous selection tracker
-            prev_selected = selected.clone()  # Track the most recent valid selection for each batch
 
             # Update the state with the selected blocks
             print("Update state with selected blocks")
@@ -316,12 +347,17 @@ class AttentionModel(nn.Module):
     
             # Collect the log probabilities and selected blocks for this step
             outputs.append(log_p[:, 0, :])
+            
             selected_blocks.append(selected)
+
+
             print("Selected blocks appended")
     
             i += 1
             
         print("Decoding completed")
+        print("-------------------------------------------------------------------------------")
+        print(f"Selected blocks: {selected_blocks}")
         print("-------------------------------------------------------------------------------")
         # Return the log probabilities and the selected blocks as a tensor
         return torch.stack(outputs, 1), torch.stack(selected_blocks, 1)
@@ -342,7 +378,9 @@ class AttentionModel(nn.Module):
         # Calculate log_likelihood
         return log_p.sum(1)
 
+    
     def _get_log_p(self, fixed, state, w, normalize=True):
+        print(f"Shape of node context embeddings before projection: {fixed.node_embeddings.shape}")
         temp = self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state))
         print(f"Shape of temp: {temp.shape}")
         # Compute query = context node embedding
@@ -374,6 +412,7 @@ class AttentionModel(nn.Module):
 
         return log_p, mask
 
+    
     def _get_parallel_step_context(self, embeddings, state):
         """
         Returns the context per step for the block selection problem (BSP).
@@ -384,11 +423,15 @@ class AttentionModel(nn.Module):
         """
     
         # Get the current node (block) that is being considered
-        current_node = state.get_current_node()  # (batch_size, num_steps)
+        current_node = state.get_current_node().clone()  # (batch_size, num_steps)
         print(f"Current node tensor shape: {current_node.shape}")
         batch_size, num_steps = current_node.size()
+
+        # Replace -1 (invalid selections) with the last valid selection
+        invalid_mask = (current_node == -1)
+        current_node[invalid_mask] = state.last_valid_a[invalid_mask]
     
-        # Gather the embedding of the current block
+        # Gather the embedding of the current block 
         current_embedding = embeddings.gather(
             1,
             current_node.unsqueeze(-1).expand(batch_size, num_steps, embeddings.size(-1))
@@ -397,58 +440,8 @@ class AttentionModel(nn.Module):
         
         # For BSP, the context is simply the embedding of the current block
         return current_embedding
-        
-    """
-    def _select_block(self, probs, mask, prev_selected=None):
-        
-        assert (probs == probs).all(), "Probs should not contain any NaNs"
-        
-        # Mask invalid actions by setting their probabilities to 0
-        masked_probs = probs.clone()
-        masked_probs[mask] = 0.0  # Set probabilities of masked actions to zero
-    
-        # Check if all actions are masked for any batch
-        all_masked_batches = mask.all(dim=1)
-        
-        # Initialize selected tensor with previous selections or default values (-1)
-        if prev_selected is None:
-            prev_selected = torch.full((masked_probs.size(0),), -1, dtype=torch.long).to(probs.device)
-        
-        # Initialize the selected actions tensor
-        selected = prev_selected.clone()
-    
-        # Handle batches where all actions are masked by using the most recent valid selection
-        if all_masked_batches.any():
-            print(f"Batches with all actions masked: {all_masked_batches.nonzero()}")
-            
-            for batch_idx in all_masked_batches.nonzero(as_tuple=True)[0]:
-                # Repeat the most recent valid selection (from prev_selected)
-                selected[batch_idx] = prev_selected[batch_idx]
-        
-        # For batches that still have valid actions, perform multinomial or greedy sampling
-        valid_batches = ~all_masked_batches
-        if valid_batches.any():
-            if self.decode_type == "greedy":
-                _, selected[valid_batches] = masked_probs[valid_batches].max(1)
-                assert not mask.gather(1, selected.unsqueeze(
-                    -1)).data.any(), "Decode greedy: infeasible action has maximum probability"
 
-            elif self.decode_type == "sampling":
-                selected[valid_batches] = masked_probs[valid_batches].multinomial(1).squeeze(1)
-                # Check if sampling went OK, can go wrong due to bug on GPU
-                # See https://discuss.pytorch.org/t/bad-behavior-of-multinomial-function/10232
-                max_resample_attempts = 10  # Arbitrary number of retries
-                attempts = 0
-                while mask.gather(1, selected.unsqueeze(-1)).data.any():
-                    print('Sampled bad values, resampling!')
-                    selected[valid_batches] = masked_probs[valid_batches].multinomial(1).squeeze(1)
-                    attempts += 1
-                    if attempts >= max_resample_attempts:
-                        print(f"Max resampling attempts reached for batch {batch_idx}")
-                        break
-        
-        return selected, all_masked_batches"""
-
+    
     def _select_block(self, probs, mask):
         
         assert (probs == probs).all(), "Probs should not contain any NaNs"
@@ -492,37 +485,6 @@ class AttentionModel(nn.Module):
         return selected, all_masked_batches
 
 
-
-    
-    """def _select_block(self, probs, mask):
-    
-        assert (probs == probs).all(), "Probs should not contain any nans"
-    
-        print(f"Shape of probabilities: {probs.shape}")
-        
-        # Make sure to mask out probabilities of infeasible actions
-        masked_probs = probs.clone()
-        masked_probs[mask] = 0.0  # Set probabilities of masked actions to 0
-    
-        print(f"Shape of masked probabilities: {masked_probs.shape}")
-        print(f"The sum of masked probabilities: {masked_probs.sum(1)}")
-    
-        if self.decode_type == "greedy":
-            _, selected = masked_probs.max(1)  # Greedy selection from valid actions
-            
-        elif self.decode_type == "sampling":
-            selected = masked_probs.multinomial(1).squeeze(1)  # Sample from valid probabilities
-            
-            # Check if sampling went OK, can go wrong due to bug on GPU
-            while mask.gather(1, selected.unsqueeze(-1)).data.any():
-                print('Sampled bad values, resampling!')
-                selected = masked_probs.multinomial(1).squeeze(1)  # Resample only from valid actions
-    
-        else:
-            assert False, "Unknown decode type"
-            
-        return selected"""
-
     
     def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
 
@@ -562,7 +524,7 @@ class AttentionModel(nn.Module):
             compatibility[exp_mask] = -1e9 # Use a large negative number instead of -inf
             print(f"Compatibility shape after mask inner: {compatibility.shape}")
 
-        # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
+        # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size) 
         print("Computing attention heads")
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
         print(f"Heads shape: {heads.shape}")

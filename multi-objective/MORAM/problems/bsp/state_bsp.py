@@ -11,6 +11,7 @@ class StateBlockSelection(NamedTuple):
     max_cap: float
     i: torch.Tensor
     selected_blocks: list
+    last_valid_a: torch.Tensor
 
     # Retrieve options
     opts = get_options()
@@ -40,66 +41,76 @@ class StateBlockSelection(NamedTuple):
         """
         print("Initializing StateBlockSelection")
         batch_size, n_loc, _ = loc.size()
-        print(n_loc)
-        prev_a = torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device)
-        print(f"Shape of prev_a at initialization: {prev_a.shape}")
+        
         return StateBlockSelection(
             loc=loc,
             ids=torch.arange(batch_size, dtype=torch.int64, device=loc.device)[:, None],
-            prev_a=prev_a,
+            prev_a=torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device),
             selected_=torch.zeros(batch_size, 1, n_loc, dtype=selected_dtype, device=loc.device),
             stored_size=torch.zeros(batch_size, 1, device=loc.device),
             i=torch.zeros(1, dtype=torch.int64, device=loc.device),
             selected_blocks=list(),
-            max_cap=max_cap
+            max_cap=max_cap,
+            last_valid_a = torch.zeros(batch_size, 1, dtype=torch.long)
         )
         
+
     def update(self, selected, all_masked_batches):
         """
         Update the state after selecting blocks for storage.
-        
+    
         :param selected: indices of the selected blocks
         :return: updated state
         """
-        # Ensure no invalid indices (-1) are passed to the gather operation
-        valid_selected = selected.clone()
-        if (valid_selected < 0).any():
-            print(f"Invalid selections (e.g., -1) found: {valid_selected}")
-            # Skip updates for these invalid selections
-            valid_selected[valid_selected < 0] = 0  # Or handle as necessary
-        
-        prev_a = valid_selected[:, None, None]  # Shape: [batch size, 1, 1]
+        # Print shapes for debugging
+        print(f"Shape of loc: {self.loc.shape}")
+        print(f"Shape of selected: {selected.shape}")
+    
+        # Prepare prev_a tensor
+        prev_a = selected[:, None, None]  # Shape: [batch_size, 1, 1]
         print(f"Shape of prev_a: {prev_a.shape}")
-        
-        # Gather the relevant feature vector for the selected block
-        gathered_loc = self.loc.gather(1, prev_a.expand(-1, -1, 4))  # Shape: [batch size, 1, 4]
-        print(f"Shape of gathered_loc: {gathered_loc.shape}")
+        print(f"Prev_a: {prev_a}")
     
-        # Update stored size with the size of the selected block (assuming it's feature index 1)
-        print(f"Block sizes to add: {gathered_loc[:, :, 1].squeeze(1)}")
-        print(f"Stored size before update: {self.stored_size}")
+        # Identify valid selections where selected != -1
+        valid_selections = (selected != -1)
+        valid_indices = valid_selections.nonzero(as_tuple=True)[0]  # Indices of valid selections
     
-        # Only update stored size for batches that are NOT all masked and where a valid selection was made
+        # Clone stored_size and selected_ to avoid in-place modifications
         stored_size = self.stored_size.clone()
-        valid_batches = (~all_masked_batches) & (selected != -1)
-        if valid_batches.any():
-            stored_size[valid_batches] += gathered_loc[valid_batches, :, 1].squeeze(1).unsqueeze(1)
-        
-        print(f"Stored size after update: {stored_size}")
+        selected_ = self.selected_.clone()
+        prev_a_squeezed = prev_a.squeeze(-1)  # Shape: [batch_size, 1]
+
+        # Only update last_valid_a where valid selections (non -1) are made
+        last_valid_a = self.last_valid_a.clone()
+        last_valid_a[valid_selections] = selected[valid_selections].unsqueeze(1)
     
-        # Update the selected blocks
-        selected_ = self.selected_.scatter(-1, prev_a, 1)
-        print(f"Selected blocks: {selected_}")
+        if valid_indices.numel() > 0:
+            # Gather data for valid selections
+            prev_a_valid = prev_a[valid_selections]  # Shape: [num_valid, 1, 1]
+            gathered_loc_valid = self.loc[valid_selections].gather(
+                1, prev_a_valid.expand(-1, -1, self.loc.size(-1))
+            )  # Shape: [num_valid, 1, loc_feature_size]
+            print(f"Shape of gathered_loc_valid: {gathered_loc_valid.shape}")
     
-        prev_a = prev_a.squeeze(-1)
+            # Update stored_size for valid selections
+            # Assuming size is at index 1 in the feature vector
+            stored_size[valid_selections] += gathered_loc_valid[:, :, 1].squeeze(1).unsqueeze(1)
+            print(f"Stored size after update: {stored_size}")
+    
+            # Update selected_ using advanced indexing
+            prev_a_valid_squeezed = prev_a_valid.squeeze(-1).squeeze(-1)  # Shape: [num_valid]
+            selected_[valid_indices, :, prev_a_valid_squeezed] = 1
+            print(f"Selected blocks after update: {selected_}")
+        else:
+            print("No valid selections. Stored size remains unchanged.")
+            print(f"Stored size: {stored_size}")
+            print(f"Selected blocks: {selected_}")
     
         # Return the updated state
-        return self._replace(prev_a=prev_a, selected_=selected_, stored_size=stored_size, i=self.i + 1)
+        return self._replace(prev_a=prev_a_squeezed, selected_=selected_, stored_size=stored_size, i=self.i + 1, last_valid_a=last_valid_a)
 
 
-
-
-         
+    
         
     def all_finished(self):
         """Check if all steps are finished."""

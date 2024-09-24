@@ -41,7 +41,7 @@ class BlockDataset(Dataset):
         blocks = []
         for index in range(num_blocks):
             size = np.clip(np.random.normal(mean_size, std_dev), min_size, max_size)
-            blocks.append(Block(index, size))
+            blocks.append(Block(index, size)) 
         return blocks
 
     def simulate_queries_with_simpy(self, blocks):
@@ -160,6 +160,7 @@ class BSP(object):
         else:
             raise ValueError("Unknown method: {}. Use 'weighted_sum' or 'tchebycheff'.".format(method))
 
+    
     @staticmethod
     def check_duplicates(pi):
         """
@@ -169,25 +170,36 @@ class BSP(object):
         :return: None
         """
         batches_with_duplicates = []  # List to track batches with duplicates
-        
+    
         # Loop over each batch to check for duplicates
         for batch_idx in range(pi.size(0)):
             # Get the selected blocks for this batch
             selected_blocks = pi[batch_idx]
             
+            # Ignore -1 values (placeholders for no selection)
+            selected_blocks = selected_blocks[selected_blocks != -1]
+            
             # Check for duplicates by comparing the length of unique elements to the total length
             unique_blocks, counts = torch.unique(selected_blocks, return_counts=True)
             
-            if (counts > 1).any():
-                # If duplicates are found, add batch index to the list
-                batches_with_duplicates.append(batch_idx)
+            # Find indices where there are duplicates (counts > 1)
+            duplicated_blocks = unique_blocks[counts > 1]
+            
+            if duplicated_blocks.numel() > 0:  # If there are duplicates
+                # Add batch index and duplicated block indices to the list
+                duplicate_indices = [int(block) for block in duplicated_blocks.tolist()]
+                batches_with_duplicates.append((batch_idx, duplicate_indices))
         
         # After the loop, print the list of batches with duplicates
         if batches_with_duplicates:
-            print(f"Batches with duplicate selections: {batches_with_duplicates}")
+            print("Batches with duplicate selections:")
+            for batch_idx, duplicate_indices in batches_with_duplicates:
+                print(f"Batch {batch_idx}: {duplicate_indices}")
             raise ValueError(f"Duplicate selections found in the following batches: {batches_with_duplicates}")
         else:
             print("No duplicate selections found in any batch.")
+
+
 
 
 
