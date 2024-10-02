@@ -133,7 +133,7 @@ class StateBlockSelection(NamedTuple):
 
         print(f"Checking capacity violation")
         # Check if adding the block would exceed the storage capacity
-        capacity_violation = (self.stored_size + self.loc[..., 1] > self.max_cap)
+        capacity_violation = (self.stored_size + self.loc[..., 1] >= self.max_cap)
         # Ensure capacity_violation has the correct shape by unsqueezing it to match the mask's second dimension
         capacity_violation = capacity_violation.unsqueeze(1)  # Shape: [50, 1, 500]
 

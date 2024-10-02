@@ -41,7 +41,7 @@ class BlockDataset(Dataset):
         blocks = []
         for index in range(num_blocks):
             size = np.clip(np.random.normal(mean_size, std_dev), min_size, max_size)
-            blocks.append(Block(index, size))
+            blocks.append(Block(index, size)) 
         return blocks
 
     def simulate_queries_with_simpy(self, blocks):
@@ -106,16 +106,29 @@ class BSP(object):
 
     @staticmethod
     def get_costs(dataset, pi, w, num_objs, max_cap=opts.max_capacity, method='weighted_sum'):
-
         print(f"The shape of pi is: {pi.shape}")
         BSP.check_duplicates(pi)
     
         # Ensure the sum of 1s (selected blocks) does not exceed the number of blocks
         assert (pi.size(1) <= dataset.size(1)), "Invalid block selection - selection sum exceeds number of blocks"
-
-        d = dataset.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, dataset.size(1), dataset.size(2))\
-            .gather(1, pi.unsqueeze(-1).expand(-1, -1, dataset.size(-1)))
-
+    
+        # Append a placeholder block (zero block) to the dataset
+        placeholder_block = torch.zeros(dataset.size(0), 1, dataset.size(2), device=dataset.device)
+        dataset_with_placeholder = torch.cat([dataset, placeholder_block], dim=1)  # Shape: [5, 501, 4]
+    
+        # Replace -1 in `pi` with the index of the placeholder block (501)
+        placeholder_index = dataset_with_placeholder.size(1) - 1  # The last block index (500 in this case)
+        
+        # Create a masked version of `pi` where -1 is replaced with the placeholder index
+        pi_valid = pi.clone()
+        pi_valid[pi_valid == -1] = placeholder_index  # Replace -1 with 500 (or the placeholder index)
+    
+        # Now gather using `pi_valid`
+        d = dataset_with_placeholder.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, dataset_with_placeholder.size(1), dataset_with_placeholder.size(2))\
+            .gather(1, pi_valid.unsqueeze(-1).expand(-1, -1, dataset_with_placeholder.size(-1)))
+    
+        print(f"Shape of solutions tensor: {d.shape}")
+        
         # Calculate query cost and monetary cost for each weight vector
         query_cost = d[..., 0]  # First column is query cost
         block_size = d[..., 1]  # Second column is block size
@@ -124,41 +137,49 @@ class BSP(object):
     
         # Calculate the total block size for selected blocks
         total_block_size = block_size.sum(1)  # Summing along the blocks dimension
-        print(total_block_size)
     
         # Ensure that the total block size does not exceed the maximum capacity
         assert (total_block_size <= max_cap).all(), "Stored blocks exceed storage capacity"
     
         # Calculate the total query cost for selected blocks (sum over blocks)
         total_query_cost = query_cost.sum(1)  # Summing along the block dimension
-    
+        
         # Calculate monetary cost components for selected blocks (sum over relevant features)
-        storage_cost = w[:, 0].unsqueeze(1) * total_block_size  # Weighted storage cost
-        request_cost = w[:, 1].unsqueeze(1) * request_freq.sum(1)  # Weighted request cost
-        transmission_cost = w[:, 2].unsqueeze(1) * (block_size * transmission_count).sum(1)  # Weighted transmission cost
+        # These components don't need weights if they are summed into one monetary cost component
+        storage_cost = total_block_size  # Storage cost based on block size
+        request_cost = request_freq.sum(1)  # Request cost based on request frequency
+        transmission_cost = (block_size * transmission_count).sum(1)  # Transmission cost
+        
+        # Total monetary cost is simply the sum of the components
         total_monetary_cost = storage_cost + request_cost + transmission_cost  # Total monetary cost
-    
-        # Reshape total costs back into the original batch structure
-        total_query_cost = total_query_cost.view(batch_size, num_weight_vectors)
-        total_monetary_cost = total_monetary_cost.view(batch_size, num_weight_vectors)
-    
+
+        # Ensure the reshaped costs match the dimensions of w
+        total_query_cost = total_query_cost.reshape(-1, w.size(0))
+        total_monetary_cost = total_monetary_cost.reshape(-1, w.size(0))
+        print(f"Shape of total query cost after reshaping: {total_query_cost.shape}")
+        print(f"Shape of total monetary cost after reshaping: {total_monetary_cost.shape}")
+        
         # Stack the objectives (query cost and monetary cost)
         stacked_costs = torch.stack([total_query_cost, total_monetary_cost], dim=-1)  # Shape: [batch_size, num_weight_vectors, 2]
-    
+        print(f"The shape of stacked costs: {stacked_costs.shape}")
+
+        w_rep = w.unsqueeze(0).expand(total_query_cost.size(0), -1, -1)
+        
         # Step 4: Calculate the final cost using the selected method (weighted sum or Tchebycheff)
         if method == 'weighted_sum':
-            # Weighted sum
-            weighted_sum = (w.unsqueeze(1) * stacked_costs).sum(-1).detach()  # Sum along the objectives dimension
+            weighted_sum = (w_rep * stacked_costs).sum(-1).detach()  # Sum along the objectives dimension
             return weighted_sum, None, [total_query_cost, total_monetary_cost]
-    
+        
         elif method == 'tchebycheff':
             # Tchebycheff scalarization
             w_rep = w.unsqueeze(0).expand(stacked_costs.size(0), -1, -1)  # Shape: [batch_size, num_weight_vectors, num_objs]
             tchebycheff = (w_rep * stacked_costs.unsqueeze(1)).max(-1)[0].detach()  # Max along the objectives dimension
             return tchebycheff, None, [total_query_cost, total_monetary_cost]
-    
+        
         else:
             raise ValueError("Unknown method: {}. Use 'weighted_sum' or 'tchebycheff'.".format(method))
+
+
 
     
     @staticmethod

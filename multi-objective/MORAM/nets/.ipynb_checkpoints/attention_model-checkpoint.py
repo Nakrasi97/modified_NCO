@@ -365,18 +365,37 @@ class AttentionModel(nn.Module):
 
 
     def _calc_log_likelihood(self, _log_p, a, mask):
-
-        # Get log_p corresponding to selected actions
-        log_p = _log_p.gather(2, a.unsqueeze(-1)).squeeze(-1)
-
-        # Optional: mask out actions irrelevant to objective so they do not get reinforced
+        """
+        Calculate the log likelihood of selected actions.
+    
+        :param _log_p: Log probabilities of all possible actions (batch_size, num_steps, ledger_size)
+        :param a: Tensor of selected actions (batch_size, num_steps)
+        :param mask: Optional mask to ignore certain actions.
+        :return: Summed log likelihood over selected actions.
+        """
+        # Create a mask for valid indices (where a != -1)
+        valid_indices_mask = a != -1
+    
+        # Initialize log_p with zeros (same shape as a)
+        log_p = torch.zeros(a.size(0), a.size(1), device=_log_p.device)
+    
+        # Only gather log probabilities for valid actions (ignore -1)
+        if valid_indices_mask.any():
+            # Use only valid indices for gathering
+            valid_a = a.clone()
+            valid_a[~valid_indices_mask] = 0  # Temporarily set invalid indices to 0 for gathering
+            log_p[valid_indices_mask] = _log_p.gather(2, valid_a.unsqueeze(-1)).squeeze(-1)[valid_indices_mask]
+    
+        # Optional: mask out actions irrelevant to the objective so they do not get reinforced
         if mask is not None:
             log_p[mask] = 0
-
+    
         assert (log_p > -1000).data.all(), "Logprobs should not be -inf, check sampling procedure!"
-
-        # Calculate log_likelihood
+    
+        # Calculate log_likelihood (sum over steps for each batch)
         return log_p.sum(1)
+
+
 
     
     def _get_log_p(self, fixed, state, w, normalize=True):
@@ -465,9 +484,14 @@ class AttentionModel(nn.Module):
         valid_batches = ~all_masked_batches
         if valid_batches.any():
             if self.decode_type == "greedy":
+                masked_probs[mask] = -float('inf')  # Set probabilities of masked actions to zero
                 _, selected[valid_batches] = masked_probs[valid_batches].max(1)
-                assert not mask.gather(1, selected.unsqueeze(
-                    -1)[valid_batches]).data.any(), "Decode greedy: infeasible action has maximum probability"
+                # Assert no masked action was selected
+                invalid_selections = mask[valid_batches].gather(1, selected[valid_batches].unsqueeze(-1)).squeeze(-1)
+                if invalid_selections.any():
+                    invalid_batches = invalid_selections.nonzero(as_tuple=True)[0]
+                    print(f"Invalid selections in batches: {invalid_batches}")
+                assert not invalid_selections.any(), "Decode greedy: infeasible action has maximum probability"
     
             elif self.decode_type == "sampling":
                 selected[valid_batches] = masked_probs[valid_batches].multinomial(1).squeeze(1)
