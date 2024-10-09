@@ -13,8 +13,8 @@ def get_options(args=None):
     parser.add_argument('--ledger_size', type=int, default=500, help="The size of the blockchain in block height")
     parser.add_argument('--max_capacity', type=float, default=100, help="The maximum capacity allowed for blockchain storage")
     parser.add_argument('--batch_size', type=int, default=5, help='Number of instances per batch during training')
-    parser.add_argument('--epoch_size', type=int, default=200, help='Number of instances per epoch during training')  # 50000
-    parser.add_argument('--val_size', type=int, default=50,
+    parser.add_argument('--epoch_size', type=int, default=2000, help='Number of instances per epoch during training')  # 50000
+    parser.add_argument('--val_size', type=int, default=860,
                         help='Number of instances used for reporting validation performance')
     parser.add_argument('--val_dataset', type=str, default=None, help='Dataset file to use for validation')
 
@@ -34,7 +34,7 @@ def get_options(args=None):
     parser.add_argument('--lr_critic', type=float, default=1e-4, help="Set the learning rate for the critic network")
     parser.add_argument('--lr_decay', type=float, default=0.99, help='Learning rate decay per epoch')
     parser.add_argument('--eval_only', action='store_true', help='Set this value to only evaluate model')
-    parser.add_argument('--n_epochs', type=int, default=1, help='The number of epochs to train')
+    parser.add_argument('--n_epochs', type=int, default=10, help='The number of epochs to train')
     parser.add_argument('--seed', type=int, default=1234, help='Random seed to use')
     parser.add_argument('--max_grad_norm', type=float, default=1.0,
                         help='Maximum L2 norm for gradient clipping, default 1.0 (0 to disable clipping)')
@@ -48,7 +48,7 @@ def get_options(args=None):
     parser.add_argument('--bl_warmup_epochs', type=int, default=None,
                         help='Number of epochs to warmup the baseline, default None means 1 for rollout (exponential '
                              'used for warmup phase), 0 otherwise. Can only be used with rollout baseline.')
-    parser.add_argument('--eval_batch_size', type=int, default=10,
+    parser.add_argument('--eval_batch_size', type=int, default=5,
                         help="Batch size to use during (baseline) evaluation")
     parser.add_argument('--checkpoint_encoder', action='store_true',
                         help='Set to decrease memory usage by checkpointing encoder')
@@ -60,7 +60,7 @@ def get_options(args=None):
 
     # MOP
     parser.add_argument('--num_weights', type=int, default=10)  # 101, 91
-    parser.add_argument('--reference_point', type=float, default=40)
+    #parser.add_argument('--reference_point', type=float, default=1.1)
     parser.add_argument('--num_top', type=int, default=5)
     parser.add_argument('--lower_bound', type=float, default=0.)
     parser.add_argument('--upper_bound', type=float, default=1.)

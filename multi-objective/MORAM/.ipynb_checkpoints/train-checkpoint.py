@@ -10,6 +10,8 @@ from torch.nn import DataParallel
 from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from utils.functions import move_to
+from pareto_plot import plot_pareto_subplots
+from nsga import nsga2bsp, nsga3bsp
 
 from pymoo.indicators.hv import HV
 import numpy as np
@@ -19,36 +21,97 @@ def get_inner_model(model):
     return model.module if isinstance(model, DataParallel) else model
 
 
+# Validate
 def validate(model, val_dataset, opts):
-    # Validate
     print('Validating...')
     
-    ref_point=np.array([opts.ledger_size for _ in range(opts.num_objs)])
-    hv_fn = HV(ref_point=ref_point)
-
-    cost, all_objs_list = rollout(model, val_dataset, opts)
+    cost, all_objs_list, storage_used = rollout(model, val_dataset, opts)
     print('Time: {:.3f}'.format(time.time() - opts.start_time))
 
-    # HV
-    all_objs = torch.stack(all_objs_list, dim=2)
+    # Stack the objectives
+    all_objs = torch.stack(all_objs_list, dim=2)  # Shape: [batch_size, num_weights, 2]
 
-    reference_point = opts.reference_point * torch.ones_like(all_objs, device=all_objs.device)
-    all_objs_rep = all_objs.unsqueeze(2).expand((-1, -1, opts.num_weights, -1))
-    all_objs_org = all_objs.unsqueeze(1).expand((-1, opts.num_weights, -1, -1))
-    dominated = (all_objs_rep - all_objs_org > 0).all(3)
+    # Prepare the reference point using worst-case objectives
+    worst_query_cost = all_objs[..., 0].min()  # Since it's maximization, min() is the worst
+    worst_monetary_cost = all_objs[..., 1].min()
+    
+    # Increase margin to ensure reference point is worse
+    ref_query = worst_query_cost - (0.5 * abs(worst_query_cost))
+    ref_monetary = worst_monetary_cost - (0.5 * abs(worst_monetary_cost))
+    
+    reference_point = torch.tensor([ref_query, ref_monetary], device=opts.device)
+    print(f"Reference point: {reference_point}")
 
-    nondominated = ~(dominated.any(2))
-    mask = nondominated.unsqueeze(2).expand_as(all_objs)
+    ref_point = reference_point.cpu().numpy()  # Move to CPU for hypervolume calculation
+    hv_fn = HV(ref_point=ref_point)
 
-    NDS = torch.where(mask, all_objs, reference_point)
+    # Initialize tensor to hold the weakly nondominated set
+    batch_size = all_objs.size(0)
+    NDS = torch.full_like(all_objs, float('nan'))  # Shape: [batch_size, num_weights, num_objs]
+
+    for i in range(batch_size):
+        dominated = torch.zeros(opts.num_weights, dtype=torch.bool, device=opts.device)
+        
+        for j in range(opts.num_weights):
+            for k in range(opts.num_weights):
+                if j != k:
+                    is_dominated = ((all_objs[i, k, :] >= all_objs[i, j, :]).all() and 
+                                    (all_objs[i, k, :] > all_objs[i, j, :]).any())
+                    if is_dominated:
+                        dominated[j] = True
+                        break
+
+        nondominated_mask = ~dominated
+        NDS[i, nondominated_mask, :] = all_objs[i, nondominated_mask, :]
+
+    # Calculate hypervolume
     hv_list = []
-    for i in range(NDS.shape[0]):
-        hv = hv_fn.do(NDS[i].cpu().numpy())
-        hv_list.append(hv)
+    for i in range(batch_size):
+        # Filter out NaNs (which correspond to dominated solutions)
+        valid_solutions = NDS[i][~torch.isnan(NDS[i][:, 0])]
+        if valid_solutions.size(0) > 0:
+            # Negate the objectives for hypervolume calculation in a maximization problem
+            valid_solutions_minimized = -valid_solutions.cpu().numpy()
+            hv = hv_fn.do(valid_solutions_minimized)
+            hv_list.append(hv)
 
-    all_hv = torch.from_numpy(np.stack(hv_list, axis=0))
-    print('{:.3f} +- {:.3f}'.format(all_hv.mean().item(), torch.std(all_hv).item()))
+    # Calculate final HV statistics
+    all_hv = torch.tensor(hv_list)
+    print('Mean HV for MORAM: {:.3f} +- {:.3f}'.format(all_hv.mean().item(), torch.std(all_hv).item()))
+    print(f'Local storage used per sample: {storage_used}')
+
+    nsga2_soln = []
+    nsga3_soln = []
+
+    start_time = time.time()
+    for i in range(0, batch_size):
+        nsga2_costs, nsga2_soln_x = nsga2bsp(val_dataset.gen_blocks[i], 200, 0.5)
+        nsga2_soln.append(nsga2_costs)
+
+    print(f"NSGA2 time: {time.time() - start_time}")
+
+    start_time = time.time()
+    
+    for i in range(0, batch_size):
+        nsga3_costs, nsga3_soln_x = nsga3bsp(val_dataset.gen_blocks[i], 200, 0.5)
+        nsga3_soln.append(nsga3_costs)
+
+    print(f"NSGA3 time: {time.time() - start_time}")
+    
+    # Assuming NDS contains the nondominated sets for all samples (from the model)
+    nds_list_model = []
+    for i in range(NDS.shape[0]):
+        valid_pareto_points = NDS[i][~torch.isnan(NDS[i][:, 0])]  # Filter out NaNs
+        if valid_pareto_points.size(0) > 0:
+            nds_list_model.append(valid_pareto_points)
+
+    # Plot all Pareto fronts as subplots in one image
+    plot_pareto_subplots(nds_list_model, nsga2_soln, nsga3_soln, 
+                         "Pareto Fronts for All Samples", 
+                         f"./graphs/pareto_fronts_subplots_{time.time()}.png")
+    
     return cost, all_objs_list, NDS, all_hv, None
+
 
 
 def rollout(model, dataset, opts):
@@ -57,23 +120,25 @@ def rollout(model, dataset, opts):
 
     def eval_model_bat(bat, model):
         with torch.no_grad():
-            cost, _, all_objs, _ = model(
+            cost, _, all_objs, _, st = model(
                 move_to(bat, opts.device),
                 opts.w_list,
                 num_objs=opts.num_objs
             )
-        return cost.data.cpu(), all_objs
+        return cost.data.cpu(), all_objs, st
 
     cost_list = []
     obj_list = []
+    
     for o in range(opts.num_objs):
         obj_list.append([])
     for bat in tqdm(DataLoader(dataset, batch_size=opts.eval_batch_size), disable=opts.no_progress_bar):
-        cost, all_objs = eval_model_bat(bat, model)
+        cost, all_objs, st = eval_model_bat(bat, model)
         cost_list.append(cost)
+        selected_size = st
         for o in range(opts.num_objs):
             obj_list[o].append(all_objs[o])
-    return torch.cat(cost_list, 0), [torch.cat(obj_list[o], 0) for o in range(opts.num_objs)]
+    return torch.cat(cost_list, 0), [torch.cat(obj_list[o], 0) for o in range(opts.num_objs)], selected_size
 
 
 def clip_grad_norms(param_groups, max_norm=math.inf):
@@ -112,22 +177,12 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
             num_samples=opts.epoch_size
         )
     )
-    print("Training dataset creation completed.")
 
-    print("Starting DataLoader initialization...")
-    training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=0)
-    print("DataLoader initialization completed.")
-    
-    # Get the first batch
-    for batch in training_dataloader:
-        print("Shape of a batch:", batch.shape)
-        break  # We just want to check the shape of the first batch
+    training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=0, pin_memory=True)
     
     # Put model in train mode!
-    print("Starting model initialization...")
     model.train()
     set_decode_type(model, "sampling")
-    print("Model initialization completed.")
 
     print("Starting training loop...")
     for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
@@ -196,11 +251,17 @@ def train_batch(
     else:
         w_tensor = torch.stack(opts.w_list, dim=0).unsqueeze(0).unsqueeze(2).expand_as(obj_tensor).to(obj_tensor.device)
     
-    score = (w_tensor * obj_tensor).sum(-1).sort(-1)[0]
-    reinforce_loss = ((cost - score[:, :, :opts.num_top].mean(-1)) * log_likelihood)
+    # Sort in descending order since we want to maximize
+    score = (w_tensor * obj_tensor).sum(-1).sort(descending=True)[0]
+    
+    # Adjust the REINFORCE loss for maximization
+    reinforce_loss = ((score[:, :, :opts.num_top].mean(-1) - cost) * log_likelihood)
+    
+    # Loss and backpropagation
     loss = reinforce_loss
     optimizer.zero_grad()
     loss.mean().backward()
+
     # Clip gradient norms and get (clipped) gradient norms for logging
     grad_norms = clip_grad_norms(optimizer.param_groups, opts.max_grad_norm)
     optimizer.step()

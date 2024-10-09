@@ -63,7 +63,6 @@ def run(opts):
             opts.w_list.append(w)
             opts.logger_list.append(temp_tb_logger)
 
-        print(f"Weights: {opts.w_list}")
     elif opts.num_objs == 3:
         print("Generating weights for 3 objectives...")
         ws = get_w(m=opts.num_objs, H=opts.H)
@@ -218,10 +217,7 @@ def run(opts):
     if opts.eval_only:
         print("Evaluating model only...")
         with torch.no_grad():
-            gs = opts.ledger_size
-            opts.reference_point = gs
-            print(opts.num_weights)
-            val_dataset.load_rand_data(gs, opts.val_size)
+            # val_dataset.load_rand_data(gs, opts.val_size)
             opts.start_time = time.time()
             _, all_objs_list, NDS, HV, num_NDS = validate(model, val_dataset, opts)
     else:

@@ -19,7 +19,7 @@ class Block:
         self.rec_access = 0.0
 
 class BlockDataset(Dataset):
-    def __init__(self, num_blocks, num_samples, min_size=0.1, max_size=2.0, mean_size=1.0, std_dev=0.25, duration=0.5, batch_size=10):
+    def __init__(self, num_blocks, num_samples, min_size=0.1, max_size=2.0, mean_size=1.0, std_dev=0.25, duration=2.0, batch_size=10):
         super(BlockDataset, self).__init__()
 
         self.num_samples = num_samples
@@ -29,9 +29,11 @@ class BlockDataset(Dataset):
 
         # Initialize the dataset with a progress bar
         self.data = []
+        self.gen_blocks = []
         for _ in tqdm(range(num_samples), desc="Creating dataset samples"):
             blocks = self.generate_blocks(num_blocks, min_size, max_size, mean_size, std_dev)
             blocks = self.simulate_queries_with_simpy(blocks)
+            self.gen_blocks.append(blocks)
             block_data = self.extract_block_data(blocks)
             self.data.append(block_data)
 
@@ -81,7 +83,7 @@ class BlockDataset(Dataset):
         for i, block in enumerate(blocks):
             block.query_cost = query_costs[i]
             block.query_freq = query_freqs[i]
-
+        
         return blocks
 
     def extract_block_data(self, blocks):
@@ -106,7 +108,6 @@ class BSP(object):
 
     @staticmethod
     def get_costs(dataset, pi, w, num_objs, max_cap=opts.max_capacity, method='weighted_sum'):
-        print(f"The shape of pi is: {pi.shape}")
         BSP.check_duplicates(pi)
     
         # Ensure the sum of 1s (selected blocks) does not exceed the number of blocks
@@ -126,8 +127,6 @@ class BSP(object):
         # Now gather using `pi_valid`
         d = dataset_with_placeholder.unsqueeze(1).expand(-1, w.size(0), -1, -1).reshape(-1, dataset_with_placeholder.size(1), dataset_with_placeholder.size(2))\
             .gather(1, pi_valid.unsqueeze(-1).expand(-1, -1, dataset_with_placeholder.size(-1)))
-    
-        print(f"Shape of solutions tensor: {d.shape}")
         
         # Calculate query cost and monetary cost for each weight vector
         query_cost = d[..., 0]  # First column is query cost
@@ -137,51 +136,51 @@ class BSP(object):
     
         # Calculate the total block size for selected blocks
         total_block_size = block_size.sum(1)  # Summing along the blocks dimension
-    
-        # Ensure that the total block size does not exceed the maximum capacity
-        assert (total_block_size <= max_cap).all(), "Stored blocks exceed storage capacity"
-    
+
+        # Ensure solution does not violate storage constraint
+        epsilon = 1e-4  # Define a small tolerance due to floating-point overshoots
+        assert (total_block_size <= max_cap + epsilon).all(), "Stored blocks exceed storage capacity"
+
         # Calculate the total query cost for selected blocks (sum over blocks)
         total_query_cost = query_cost.sum(1)  # Summing along the block dimension
+        print(f"Values of total query cost: {total_query_cost}")
         
         # Calculate monetary cost components for selected blocks (sum over relevant features)
         # These components don't need weights if they are summed into one monetary cost component
-        storage_cost = total_block_size  # Storage cost based on block size
-        request_cost = request_freq.sum(1)  # Request cost based on request frequency
-        transmission_cost = (block_size * transmission_count).sum(1)  # Transmission cost
+        storage_cost = total_block_size * 0.00274  # Storage cost based on block size
+        request_cost = request_freq.sum(1) * 0.0006  # Request cost based on request frequency
+        transmission_cost = (block_size * transmission_count).sum(1) * 0.0154  # Transmission cost
         
         # Total monetary cost is simply the sum of the components
         total_monetary_cost = storage_cost + request_cost + transmission_cost  # Total monetary cost
+        print(f"Values of total monetary cost: {total_monetary_cost}")
 
         # Ensure the reshaped costs match the dimensions of w
         total_query_cost = total_query_cost.reshape(-1, w.size(0))
         total_monetary_cost = total_monetary_cost.reshape(-1, w.size(0))
-        print(f"Shape of total query cost after reshaping: {total_query_cost.shape}")
-        print(f"Shape of total monetary cost after reshaping: {total_monetary_cost.shape}")
         
         # Stack the objectives (query cost and monetary cost)
         stacked_costs = torch.stack([total_query_cost, total_monetary_cost], dim=-1)  # Shape: [batch_size, num_weight_vectors, 2]
-        print(f"The shape of stacked costs: {stacked_costs.shape}")
+        print(f"The shape of the stacked costs: {stacked_costs.shape}")
 
         w_rep = w.unsqueeze(0).expand(total_query_cost.size(0), -1, -1)
         
         # Step 4: Calculate the final cost using the selected method (weighted sum or Tchebycheff)
         if method == 'weighted_sum':
             weighted_sum = (w_rep * stacked_costs).sum(-1).detach()  # Sum along the objectives dimension
-            return weighted_sum, None, [total_query_cost, total_monetary_cost]
+            return weighted_sum, None, [total_query_cost, total_monetary_cost], total_block_size
         
         elif method == 'tchebycheff':
             # Tchebycheff scalarization
             w_rep = w.unsqueeze(0).expand(stacked_costs.size(0), -1, -1)  # Shape: [batch_size, num_weight_vectors, num_objs]
             tchebycheff = (w_rep * stacked_costs.unsqueeze(1)).max(-1)[0].detach()  # Max along the objectives dimension
-            return tchebycheff, None, [total_query_cost, total_monetary_cost]
+            return tchebycheff, None, [total_query_cost, total_monetary_cost], total_block_size
         
         else:
             raise ValueError("Unknown method: {}. Use 'weighted_sum' or 'tchebycheff'.".format(method))
 
 
 
-    
     @staticmethod
     def check_duplicates(pi):
         """
@@ -217,12 +216,7 @@ class BSP(object):
             for batch_idx, duplicate_indices in batches_with_duplicates:
                 print(f"Batch {batch_idx}: {duplicate_indices}")
             raise ValueError(f"Duplicate selections found in the following batches: {batches_with_duplicates}")
-        else:
-            print("No duplicate selections found in any batch.")
-
-
-
-
+        
 
 
     @staticmethod

@@ -39,7 +39,6 @@ class StateBlockSelection(NamedTuple):
         :param max_cap: maximum storage capacity
         :return: initialized state
         """
-        print("Initializing StateBlockSelection")
         batch_size, n_loc, _ = loc.size()
         
         return StateBlockSelection(
@@ -51,7 +50,7 @@ class StateBlockSelection(NamedTuple):
             i=torch.zeros(1, dtype=torch.int64, device=loc.device),
             selected_blocks=list(),
             max_cap=max_cap,
-            last_valid_a = torch.zeros(batch_size, 1, dtype=torch.long)
+            last_valid_a = torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device)
         )
         
 
@@ -62,15 +61,10 @@ class StateBlockSelection(NamedTuple):
         :param selected: indices of the selected blocks
         :return: updated state
         """
-        # Print shapes for debugging
-        print(f"Shape of loc: {self.loc.shape}")
-        print(f"Shape of selected: {selected.shape}")
     
         # Prepare prev_a tensor
         prev_a = selected[:, None, None]  # Shape: [batch_size, 1, 1]
-        print(f"Shape of prev_a: {prev_a.shape}")
-        print(f"Prev_a: {prev_a}")
-    
+        
         # Identify valid selections where selected != -1
         valid_selections = (selected != -1)
         valid_indices = valid_selections.nonzero(as_tuple=True)[0]  # Indices of valid selections
@@ -90,21 +84,16 @@ class StateBlockSelection(NamedTuple):
             gathered_loc_valid = self.loc[valid_selections].gather(
                 1, prev_a_valid.expand(-1, -1, self.loc.size(-1))
             )  # Shape: [num_valid, 1, loc_feature_size]
-            print(f"Shape of gathered_loc_valid: {gathered_loc_valid.shape}")
     
             # Update stored_size for valid selections
             # Assuming size is at index 1 in the feature vector
             stored_size[valid_selections] += gathered_loc_valid[:, :, 1].squeeze(1).unsqueeze(1)
-            print(f"Stored size after update: {stored_size}")
     
             # Update selected_ using advanced indexing
             prev_a_valid_squeezed = prev_a_valid.squeeze(-1).squeeze(-1)  # Shape: [num_valid]
             selected_[valid_indices, :, prev_a_valid_squeezed] = 1
-            print(f"Selected blocks after update: {selected_}")
         else:
             print("No valid selections. Stored size remains unchanged.")
-            print(f"Stored size: {stored_size}")
-            print(f"Selected blocks: {selected_}")
     
         # Return the updated state
         return self._replace(prev_a=prev_a_squeezed, selected_=selected_, stored_size=stored_size, i=self.i + 1, last_valid_a=last_valid_a)
@@ -126,19 +115,15 @@ class StateBlockSelection(NamedTuple):
         
         :return: mask tensor
         """
-        print("Checking for selected blocks")
+        
         # Check if the block has already been selected
         mask = (self.selected > 0)  # Selected blocks get True, others get False
-        print(f"Shape of mask with only selected: {mask.shape}")
-
-        print(f"Checking capacity violation")
+    
         # Check if adding the block would exceed the storage capacity
         capacity_violation = (self.stored_size + self.loc[..., 1] >= self.max_cap)
         # Ensure capacity_violation has the correct shape by unsqueezing it to match the mask's second dimension
         capacity_violation = capacity_violation.unsqueeze(1)  # Shape: [50, 1, 500]
 
-        print("***Checking capacity violation")
-        
         # Combine the two conditions
         mask = mask | capacity_violation
         
