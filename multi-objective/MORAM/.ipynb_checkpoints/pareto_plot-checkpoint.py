@@ -35,8 +35,8 @@ def plot_pareto_subplots(nds_list_model, nds_list_nsga2, nds_list_nsga3, title, 
         ax.scatter(pareto_points_nsga3[:, 0], pareto_points_nsga3[:, 1], color='black', label="NSGA3 NDS")
 
         ax.set_title(f'Sample {i+1}')
-        ax.set_xlabel('Query Cost')
-        ax.set_ylabel('Monetary Cost')
+        ax.set_xlabel('Total Query Cost')
+        ax.set_ylabel('Total Monetary Savings')
         ax.legend()
         ax.grid(True)
     

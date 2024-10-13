@@ -99,15 +99,25 @@ class AttentionModel(nn.Module):
 
         # Define the embedding layer for the block selection problem
         if problem.NAME == "block_selection":
-            node_dim = 4  # Number of features per block (size, query cost, request frequency, transmission count)
-            step_context_dim = embedding_dim
+            node_dim = 3  # Number of features per block (size, query cost, request frequency)
+            
+            # Step context includes the block embedding and the remaining capacity
+            step_context_dim = embedding_dim + 1  # +1 for remaining capacity
+        
         else:
             assert problem.NAME == "block_selection", "Unsupported problem: {}".format(problem.NAME)
-            step_context_dim = embedding_dim  # Embedding of first and last node
-            node_dim = 4  # Number of features per block (size, query cost, request frequency, transmission count)
-
+            
+            # Same logic as above, step context should include the remaining capacity
+            step_context_dim = embedding_dim + 1  # +1 for remaining capacity
+            node_dim = 3  # Number of features per block (size, query cost, request frequency)
+        
+        # Embedding layers for the block features
         self.init_embed_qcobj = nn.Linear(1, embedding_dim)
-        self.init_embed_mcobj = nn.Linear(3, embedding_dim)
+        self.init_embed_mcobj = nn.Linear(2, embedding_dim)
+        
+        # Add a projection for the remaining capacity
+        self.project_remaining_capacity = nn.Linear(1, embedding_dim)
+
 
         self.embedder = GraphAttentionEncoder(
             n_heads=n_heads,
@@ -140,11 +150,11 @@ class AttentionModel(nn.Module):
         if temp is not None:  # Do not change temperature if not provided
             self.temp = temp
 
-    def forward(self, input, w_list, return_pi=False, num_objs=2):
+    def forward(self, input, w_list, num_objs=2):
         """
         Forward pass of the AttentionModel. Processes the input data through the encoder and performs the decoding.
         
-        :param input: (batch_size, ledger_size, 4) input node features
+        :param input: (batch_size, ledger_size, 3) input node features
         :param w_list: list of weight vectors for objectives
         :param return_pi: if True, returns the sequence of selections (indices)
         :return: calculated costs, log likelihood, and the weighted objectives list
@@ -153,13 +163,13 @@ class AttentionModel(nn.Module):
             # Checkpointing to save memory during training
             emb_list = []
             emb_list.append(checkpoint(self.embedder, self._init_embed(input[:, :, 0:1], "query_cost"))[0])
-            emb_list.append(checkpoint(self.embedder, self._init_embed(input[:, :, 1:4], "monetary_cost"))[0])
+            emb_list.append(checkpoint(self.embedder, self._init_embed(input[:, :, 1:3], "monetary_cost"))[0])
             mixed_emb, _ = checkpoint(self.mix_gat, self.mix_emb(input))
             emb_list.append(mixed_emb)
         else:
             emb_list = []
             emb_list.append(self.embedder(self._init_embed(input[:, :, 0:1], "query_cost"))[0])
-            emb_list.append(self.embedder(self._init_embed(input[:, :, 1:4], "monetary_cost"))[0])
+            emb_list.append(self.embedder(self._init_embed(input[:, :, 1:3], "monetary_cost"))[0])
             mixed_emb, _ = self.mix_gat(self.mix_emb(input))
             emb_list.append(mixed_emb)
 
@@ -183,10 +193,7 @@ class AttentionModel(nn.Module):
         # Calculate the log likelihood
         ll = self._calc_log_likelihood(_log_p, pi, mask)
 
-        if return_pi:
-            return cost, ll, all_cost_list, pi
-
-        return cost, ll, all_cost_list, coef, total_storage
+        return cost, ll, all_cost_list, coef, pi, total_storage
 
     def _init_embed(self, input, obj):
         """
@@ -328,7 +335,7 @@ class AttentionModel(nn.Module):
     
     def _get_log_p(self, fixed, state, w, normalize=True):
         
-        temp = self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state))
+        temp = self.project_step_context(self._get_parallel_step_context(fixed.node_embeddings, state, opts))
         # Compute query = context node embedding
         query = fixed.context_node_projected + temp
 
@@ -349,15 +356,16 @@ class AttentionModel(nn.Module):
         return log_p, mask
 
     
-    def _get_parallel_step_context(self, embeddings, state):
+    def _get_parallel_step_context(self, embeddings, state, opts):
         """
         Returns the context per step for the block selection problem (BSP).
         
         :param embeddings: (batch_size, ledger_size, embed_dim) - the embeddings of the blocks.
         :param state: The current state of the block selection process.
-        :return: (batch_size, 1, context_dim)
+        :param opts: Contains max_capacity and other parameters.
+        :return: (batch_size, num_steps, context_dim) - concatenated embeddings and remaining capacity.
         """
-    
+        
         # Get the current node (block) that is being considered
         current_node = state.get_current_node().clone()  # (batch_size, num_steps)
         batch_size, num_steps = current_node.size()
@@ -366,16 +374,22 @@ class AttentionModel(nn.Module):
         invalid_mask = (current_node == -1)
         current_node[invalid_mask] = state.last_valid_a[invalid_mask]
     
-        # Gather the embedding of the current block 
-        current_embedding = embeddings.gather(
+        # Get embeddings for the current nodes
+        current_embedding = torch.gather(
+            embeddings,
             1,
-            current_node.unsqueeze(-1).expand(batch_size, num_steps, embeddings.size(-1))
-        )  # (batch_size, num_steps, embed_dim)
-        
-        # For BSP, the context is simply the embedding of the current block
-        return current_embedding
-
+            current_node.contiguous()
+                .view(batch_size, num_steps, 1)
+                .expand(batch_size, num_steps, embeddings.size(-1))
+        )  # Shape: (batch_size, num_steps, embed_dim)
     
+        # Compute remaining capacity
+        remaining_capacity = (opts.max_capacity - state.stored_size[:, :, None])  # Shape: (batch_size, num_steps, 1)
+    
+        # Concatenate embeddings with remaining capacity
+        return torch.cat((current_embedding, remaining_capacity), dim=-1)  # Shape: (batch_size, num_steps, context_dim)
+
+
     def _select_block(self, probs, mask):
         
         assert (probs == probs).all(), "Probs should not contain any NaNs"

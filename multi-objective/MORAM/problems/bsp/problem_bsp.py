@@ -16,7 +16,6 @@ class Block:
         self.size = size
         self.query_cost = 0.0
         self.query_freq = 0
-        self.rec_access = 0.0
 
 class BlockDataset(Dataset):
     def __init__(self, num_blocks, num_samples, min_size=0.1, max_size=2.0, mean_size=1.0, std_dev=0.25, duration=2.0, batch_size=10):
@@ -89,7 +88,7 @@ class BlockDataset(Dataset):
     def extract_block_data(self, blocks):
         block_data = []
         for block in blocks:
-            block_info = [block.query_cost, block.size, block.query_freq, block.rec_access]
+            block_info = [block.query_cost, block.size, block.query_freq]
             block_data.append(block_info)
         return torch.FloatTensor(block_data)
 
@@ -115,7 +114,7 @@ class BSP(object):
     
         # Append a placeholder block (zero block) to the dataset
         placeholder_block = torch.zeros(dataset.size(0), 1, dataset.size(2), device=dataset.device)
-        dataset_with_placeholder = torch.cat([dataset, placeholder_block], dim=1)  # Shape: [5, 501, 4]
+        dataset_with_placeholder = torch.cat([dataset, placeholder_block], dim=1)  # Shape: [5, 501, 3]
     
         # Replace -1 in `pi` with the index of the placeholder block (501)
         placeholder_index = dataset_with_placeholder.size(1) - 1  # The last block index (500 in this case)
@@ -132,7 +131,7 @@ class BSP(object):
         query_cost = d[..., 0]  # First column is query cost
         block_size = d[..., 1]  # Second column is block size
         request_freq = d[..., 2]  # Third column is request frequency
-        transmission_count = d[..., 3]  # Fourth column is transmission count
+        # transmission_count = d[..., 3]  # Fourth column is transmission count
     
         # Calculate the total block size for selected blocks
         total_block_size = block_size.sum(1)  # Summing along the blocks dimension
@@ -147,9 +146,9 @@ class BSP(object):
         
         # Calculate monetary cost components for selected blocks (sum over relevant features)
         # These components don't need weights if they are summed into one monetary cost component
-        storage_cost = total_block_size * 0.00274  # Storage cost based on block size
-        request_cost = request_freq.sum(1) * 0.0006  # Request cost based on request frequency
-        transmission_cost = (block_size * transmission_count).sum(1) * 0.0154  # Transmission cost
+        storage_cost = total_block_size * 0.000027  # Storage cost based on block size
+        request_cost = request_freq.sum(1) * 0.000006  # Request cost based on request frequency
+        transmission_cost = (block_size * request_freq).sum(1) * 0.00015  # Transmission cost
         
         # Total monetary cost is simply the sum of the components
         total_monetary_cost = storage_cost + request_cost + transmission_cost  # Total monetary cost
@@ -161,7 +160,17 @@ class BSP(object):
         
         # Stack the objectives (query cost and monetary cost)
         stacked_costs = torch.stack([total_query_cost, total_monetary_cost], dim=-1)  # Shape: [batch_size, num_weight_vectors, 2]
-        print(f"The shape of the stacked costs: {stacked_costs.shape}")
+        # print(f"The shape of the stacked costs: {stacked_costs.shape}")
+
+        """"
+        # Print block-level data to track costs
+        for i in range(block_size.size(0)):  # Iterate over each batch
+            print(f"Batch {i}:")
+            print(f"  Query costs: {query_cost[i]}")
+            print(f"  Block sizes: {block_size[i]}")
+            print(f"  Request frequencies: {request_freq[i]}")
+            print(f"  Transmission counts: {transmission_count[i]}")
+        """
 
         w_rep = w.unsqueeze(0).expand(total_query_cost.size(0), -1, -1)
         

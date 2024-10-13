@@ -25,7 +25,7 @@ def get_inner_model(model):
 def validate(model, val_dataset, opts):
     print('Validating...')
     
-    cost, all_objs_list, storage_used = rollout(model, val_dataset, opts)
+    cost, all_objs_list, blocks_selected, storage_used = rollout(model, val_dataset, opts)
     print('Time: {:.3f}'.format(time.time() - opts.start_time))
 
     # Stack the objectives
@@ -40,7 +40,7 @@ def validate(model, val_dataset, opts):
     ref_monetary = worst_monetary_cost - (0.5 * abs(worst_monetary_cost))
     
     reference_point = torch.tensor([ref_query, ref_monetary], device=opts.device)
-    print(f"Reference point: {reference_point}")
+    # print(f"Reference point: {reference_point}")
 
     ref_point = reference_point.cpu().numpy()  # Move to CPU for hypervolume calculation
     hv_fn = HV(ref_point=ref_point)
@@ -78,37 +78,40 @@ def validate(model, val_dataset, opts):
     # Calculate final HV statistics
     all_hv = torch.tensor(hv_list)
     print('Mean HV for MORAM: {:.3f} +- {:.3f}'.format(all_hv.mean().item(), torch.std(all_hv).item()))
-    print(f'Local storage used per sample: {storage_used}')
+    # print(f'Local storage used per sample: {storage_used}')
 
-    nsga2_soln = []
-    nsga3_soln = []
 
-    start_time = time.time()
-    for i in range(0, batch_size):
-        nsga2_costs, nsga2_soln_x = nsga2bsp(val_dataset.gen_blocks[i], 200, 0.5)
-        nsga2_soln.append(nsga2_costs)
-
-    print(f"NSGA2 time: {time.time() - start_time}")
-
-    start_time = time.time()
+    if opts.compare_nsga:
+        nsga2_soln = []
+        nsga3_soln = []
     
-    for i in range(0, batch_size):
-        nsga3_costs, nsga3_soln_x = nsga3bsp(val_dataset.gen_blocks[i], 200, 0.5)
-        nsga3_soln.append(nsga3_costs)
-
-    print(f"NSGA3 time: {time.time() - start_time}")
+        start_time = time.time()
+        for i in range(0, batch_size):
+            nsga2_costs, nsga2_soln_x = nsga2bsp(val_dataset.gen_blocks[i])
+            nsga2_soln.append(nsga2_costs)
     
-    # Assuming NDS contains the nondominated sets for all samples (from the model)
-    nds_list_model = []
-    for i in range(NDS.shape[0]):
-        valid_pareto_points = NDS[i][~torch.isnan(NDS[i][:, 0])]  # Filter out NaNs
-        if valid_pareto_points.size(0) > 0:
-            nds_list_model.append(valid_pareto_points)
-
-    # Plot all Pareto fronts as subplots in one image
-    plot_pareto_subplots(nds_list_model, nsga2_soln, nsga3_soln, 
-                         "Pareto Fronts for All Samples", 
-                         f"./graphs/pareto_fronts_subplots_{time.time()}.png")
+        print(f"NSGA2 time: {time.time() - start_time}\n Local storage used: {nsga2_soln_x}")
+    
+        start_time = time.time()
+        
+        for i in range(0, batch_size):
+            nsga3_costs, nsga3_soln_x = nsga3bsp(val_dataset.gen_blocks[i])
+            nsga3_soln.append(nsga3_costs)
+    
+        print(f"NSGA3 time: {time.time() - start_time}\n Local storage used: {nsga3_soln_x}")
+        
+        # Assuming NDS contains the nondominated sets for all samples (from the model)
+        nds_list_model = []
+        for i in range(NDS.shape[0]):
+            valid_pareto_points = NDS[i][~torch.isnan(NDS[i][:, 0])]  # Filter out NaNs
+            if valid_pareto_points.size(0) > 0:
+                nds_list_model.append(valid_pareto_points)
+    
+        # Plot all Pareto fronts as subplots in one image
+        if nsga2_costs.all() and nsga3_costs.all() is not None:
+            plot_pareto_subplots(nds_list_model, nsga2_soln, nsga3_soln, 
+                                 "Pareto Fronts for All Samples", 
+                                 f"./graphs/pareto_fronts_subplots_{time.time()}.png")
     
     return cost, all_objs_list, NDS, all_hv, None
 
@@ -120,12 +123,12 @@ def rollout(model, dataset, opts):
 
     def eval_model_bat(bat, model):
         with torch.no_grad():
-            cost, _, all_objs, _, st = model(
+            cost, _, all_objs, _, selections, st = model(
                 move_to(bat, opts.device),
                 opts.w_list,
                 num_objs=opts.num_objs
             )
-        return cost.data.cpu(), all_objs, st
+        return cost.data.cpu(), all_objs, selections, st
 
     cost_list = []
     obj_list = []
@@ -242,7 +245,7 @@ def train_batch(
 ):
     set_decode_type(model, "sampling")
     x = move_to(batch, opts.device)
-    cost, log_likelihood, all_dists, coef = model(x, opts.w_list, num_objs=opts.num_objs)
+    cost, log_likelihood, all_dists, coef, st = model(x, opts.w_list, num_objs=opts.num_objs)
     log_likelihood = log_likelihood.reshape(-1, opts.num_weights)
 
     obj_tensor = torch.stack(all_dists, dim=2).unsqueeze(1).expand(-1, opts.num_weights, -1, -1)
