@@ -67,7 +67,7 @@ def nsga2bsp(target_blocks, max_capacity=100.0):
 
     result = minimize(problem,
                       algorithm,
-                      termination=('n_gen', 200),
+                      termination=('n_gen', 100),
                       verbose=False)
 
     if result.X is None:
@@ -110,7 +110,7 @@ def nsga3bsp(target_blocks, max_capacity=100.0):
 
     result = minimize(problem,
                       algorithm,
-                      termination=('n_gen', 200),
+                      termination=('n_gen', 100),
                       verbose=False)
 
     if result.X is None:

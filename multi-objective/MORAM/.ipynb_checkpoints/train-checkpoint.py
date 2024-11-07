@@ -10,7 +10,7 @@ from torch.nn import DataParallel
 from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from utils.functions import move_to
-from pareto_plot import plot_pareto_subplots
+from plots import plot_pareto_subplots, plot_comparisons
 from nsga import nsga2bsp, nsga3bsp
 
 from pymoo.indicators.hv import HV
@@ -22,36 +22,49 @@ def get_inner_model(model):
 
 
 # Validate
+import time
+
 def validate(model, val_dataset, opts):
     print('Validating...')
-    
-    cost, all_objs_list, blocks_selected, storage_used = rollout(model, val_dataset, opts)
-    print('Time: {:.3f}'.format(time.time() - opts.start_time))
 
-    # Stack the objectives
+    # Initialize dictionary to store the results
+    results = {
+        'model': {'query_costs': [], 'monetary_costs': [], 'local_storage': [], 'runtime': 0},
+        'nsga2': {'query_costs': [], 'monetary_costs': [], 'local_storage': [], 'runtime': 0},
+        'nsga3': {'query_costs': [], 'monetary_costs': [], 'local_storage': [], 'runtime': 0}
+    }
+
+    # Measure the model's runtime
+    start_time = time.time()
+
+    # Call rollout to get the model's results
+    cost, all_objs_list, blocks_selected, storage_used = rollout(model, val_dataset, opts)
+
+    # Store the model runtime
+    results['model']['runtime'] = time.time() - start_time
+
+    print(f"Model runtime: {results['model']['runtime']} seconds")
+    
+    # Stack the objectives (query cost, monetary cost)
     all_objs = torch.stack(all_objs_list, dim=2)  # Shape: [batch_size, num_weights, 2]
 
-    # Prepare the reference point using worst-case objectives
+    # Prepare reference point for HV calculation (worst-case objectives)
     worst_query_cost = all_objs[..., 0].min()  # Since it's maximization, min() is the worst
     worst_monetary_cost = all_objs[..., 1].min()
-    
-    # Increase margin to ensure reference point is worse
+
     ref_query = worst_query_cost - (0.5 * abs(worst_query_cost))
     ref_monetary = worst_monetary_cost - (0.5 * abs(worst_monetary_cost))
     
     reference_point = torch.tensor([ref_query, ref_monetary], device=opts.device)
-    # print(f"Reference point: {reference_point}")
+    hv_fn = HV(ref_point=reference_point.cpu().numpy())
 
-    ref_point = reference_point.cpu().numpy()  # Move to CPU for hypervolume calculation
-    hv_fn = HV(ref_point=ref_point)
-
-    # Initialize tensor to hold the weakly nondominated set
+    # Initialize tensor to hold the nondominated set
     batch_size = all_objs.size(0)
-    NDS = torch.full_like(all_objs, float('nan'))  # Shape: [batch_size, num_weights, num_objs]
+    NDS = torch.full_like(all_objs, float('nan'))
 
+    # Determine the nondominated solutions
     for i in range(batch_size):
         dominated = torch.zeros(opts.num_weights, dtype=torch.bool, device=opts.device)
-        
         for j in range(opts.num_weights):
             for k in range(opts.num_weights):
                 if j != k:
@@ -60,59 +73,79 @@ def validate(model, val_dataset, opts):
                     if is_dominated:
                         dominated[j] = True
                         break
-
         nondominated_mask = ~dominated
         NDS[i, nondominated_mask, :] = all_objs[i, nondominated_mask, :]
 
+
     # Calculate hypervolume
     hv_list = []
+    
     for i in range(batch_size):
-        # Filter out NaNs (which correspond to dominated solutions)
+        # Filter out NaNs (which correspond to dominated or invalid solutions)
         valid_solutions = NDS[i][~torch.isnan(NDS[i][:, 0])]
+        
         if valid_solutions.size(0) > 0:
             # Negate the objectives for hypervolume calculation in a maximization problem
             valid_solutions_minimized = -valid_solutions.cpu().numpy()
+            
+            # Compute the hypervolume for the valid, nondominated set
             hv = hv_fn.do(valid_solutions_minimized)
             hv_list.append(hv)
 
-    # Calculate final HV statistics
-    all_hv = torch.tensor(hv_list)
-    print('Mean HV for MORAM: {:.3f} +- {:.3f}'.format(all_hv.mean().item(), torch.std(all_hv).item()))
-    # print(f'Local storage used per sample: {storage_used}')
+            # Apply the nondominated mask to the storage for this batch
+            nondominated_mask = ~torch.isnan(NDS[i][:, 0])
 
-
+            # Calculate local storage used for nondominated solutions
+            nondominated_storage = storage_used[i][nondominated_mask].cpu().numpy()  # Use the i-th sample's storage info
+            
+            # Store valid costs
+            query_costs = valid_solutions[:, 0].cpu().numpy()
+            monetary_costs = valid_solutions[:, 1].cpu().numpy()
+            results['model']['query_costs'].extend(query_costs)
+            results['model']['monetary_costs'].extend(monetary_costs)
+            results['model']['local_storage'].extend(nondominated_storage)
+    
+    # Calculate final HV statistics (if there are valid hypervolumes)
+    if len(hv_list) > 0:
+        all_hv = torch.tensor(hv_list)
+        print(f"HV values: {all_hv}")
+        print('Mean HV for MORAM: {:.3f} +- {:.3f}'.format(all_hv.mean().item(), torch.std(all_hv).item()))
+    else:
+        print("No valid hypervolume calculated.")
+        
+            
+    # Run NSGA-II and NSGA-III on the same dataset
     if opts.compare_nsga:
         nsga2_soln = []
         nsga3_soln = []
-    
+
+        # Measure NSGA-II runtime
         start_time = time.time()
-        for i in range(0, batch_size):
-            nsga2_costs, nsga2_soln_x = nsga2bsp(val_dataset.gen_blocks[i])
+        for i in range(batch_size):
+            nsga2_costs, nsga2_storage = nsga2bsp(val_dataset.gen_blocks[i])
             nsga2_soln.append(nsga2_costs)
-    
-        print(f"NSGA2 time: {time.time() - start_time}\n Local storage used: {nsga2_soln_x}")
-    
+            results['nsga2']['query_costs'].extend(nsga2_costs[:, 0])
+            results['nsga2']['monetary_costs'].extend(nsga2_costs[:, 1])
+            results['nsga2']['local_storage'].extend(nsga2_storage)
+        results['nsga2']['runtime'] = time.time() - start_time
+
+        print(f"NSGA2 runtime: {results['nsga2']['runtime']} seconds")
+
+        # Measure NSGA-III runtime
         start_time = time.time()
-        
-        for i in range(0, batch_size):
-            nsga3_costs, nsga3_soln_x = nsga3bsp(val_dataset.gen_blocks[i])
+        for i in range(batch_size):
+            nsga3_costs, nsga3_storage = nsga3bsp(val_dataset.gen_blocks[i])
             nsga3_soln.append(nsga3_costs)
-    
-        print(f"NSGA3 time: {time.time() - start_time}\n Local storage used: {nsga3_soln_x}")
-        
-        # Assuming NDS contains the nondominated sets for all samples (from the model)
-        nds_list_model = []
-        for i in range(NDS.shape[0]):
-            valid_pareto_points = NDS[i][~torch.isnan(NDS[i][:, 0])]  # Filter out NaNs
-            if valid_pareto_points.size(0) > 0:
-                nds_list_model.append(valid_pareto_points)
-    
-        # Plot all Pareto fronts as subplots in one image
-        if nsga2_costs.all() and nsga3_costs.all() is not None:
-            plot_pareto_subplots(nds_list_model, nsga2_soln, nsga3_soln, 
-                                 "Pareto Fronts for All Samples", 
-                                 f"./graphs/pareto_fronts_subplots_{time.time()}.png")
-    
+            results['nsga3']['query_costs'].extend(nsga3_costs[:, 0])
+            results['nsga3']['monetary_costs'].extend(nsga3_costs[:, 1])
+            results['nsga3']['local_storage'].extend(nsga3_storage)
+        results['nsga3']['runtime'] = time.time() - start_time
+
+        print(f"NSGA3 runtime: {results['nsga3']['runtime']} seconds")
+
+    # Plot comparisons between the model, NSGA-II, and NSGA-III
+    plot_comparisons(results)
+
     return cost, all_objs_list, NDS, all_hv, None
 
 
@@ -132,16 +165,21 @@ def rollout(model, dataset, opts):
 
     cost_list = []
     obj_list = []
+    storage_list = []  # Track storage usage
     
     for o in range(opts.num_objs):
         obj_list.append([])
     for bat in tqdm(DataLoader(dataset, batch_size=opts.eval_batch_size), disable=opts.no_progress_bar):
-        cost, all_objs, st = eval_model_bat(bat, model)
+        cost, all_objs, sel, loc_st = eval_model_bat(bat, model)
         cost_list.append(cost)
-        selected_size = st
+        storage_list.append(loc_st)
         for o in range(opts.num_objs):
             obj_list[o].append(all_objs[o])
-    return torch.cat(cost_list, 0), [torch.cat(obj_list[o], 0) for o in range(opts.num_objs)], selected_size
+            
+
+    
+    # Stack storage used across batches and return it
+    return torch.cat(cost_list, 0), [torch.cat(obj_list[o], 0) for o in range(opts.num_objs)], None, torch.cat(storage_list, 0)
 
 
 def clip_grad_norms(param_groups, max_norm=math.inf):
@@ -245,10 +283,10 @@ def train_batch(
 ):
     set_decode_type(model, "sampling")
     x = move_to(batch, opts.device)
-    cost, log_likelihood, all_dists, coef, st = model(x, opts.w_list, num_objs=opts.num_objs)
+    cost, log_likelihood, all_costs, coef, sels, st = model(x, opts.w_list, num_objs=opts.num_objs)
     log_likelihood = log_likelihood.reshape(-1, opts.num_weights)
 
-    obj_tensor = torch.stack(all_dists, dim=2).unsqueeze(1).expand(-1, opts.num_weights, -1, -1)
+    obj_tensor = torch.stack(all_costs, dim=2).unsqueeze(1).expand(-1, opts.num_weights, -1, -1)
     if torch.cuda.device_count() > 1:
         w_tensor = torch.stack(opts.w_list, dim=0)[:, :opts.num_objs].unsqueeze(0).unsqueeze(2).expand_as(obj_tensor).to(obj_tensor.device)
     else:
@@ -272,6 +310,6 @@ def train_batch(
     # Logging
     if step % int(opts.log_step) == 0:
         log_values(cost, grad_norms, epoch, batch_id, step,
-                   log_likelihood, loss, reinforce_loss, all_dists, coef, tb_logger, opts)
+                   log_likelihood, loss, reinforce_loss, all_costs, coef, tb_logger, opts)
 
 

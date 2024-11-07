@@ -142,7 +142,6 @@ class BSP(object):
 
         # Calculate the total query cost for selected blocks (sum over blocks)
         total_query_cost = query_cost.sum(1)  # Summing along the block dimension
-        print(f"Values of total query cost: {total_query_cost}")
         
         # Calculate monetary cost components for selected blocks (sum over relevant features)
         # These components don't need weights if they are summed into one monetary cost component
@@ -152,11 +151,11 @@ class BSP(object):
         
         # Total monetary cost is simply the sum of the components
         total_monetary_cost = storage_cost + request_cost + transmission_cost  # Total monetary cost
-        print(f"Values of total monetary cost: {total_monetary_cost}")
 
-        # Ensure the reshaped costs match the dimensions of w
+        # Ensure the reshaped costs and storage used match the dimensions of w
         total_query_cost = total_query_cost.reshape(-1, w.size(0))
         total_monetary_cost = total_monetary_cost.reshape(-1, w.size(0))
+        total_block_size = total_block_size.reshape(-1, w.size(0))
         
         # Stack the objectives (query cost and monetary cost)
         stacked_costs = torch.stack([total_query_cost, total_monetary_cost], dim=-1)  # Shape: [batch_size, num_weight_vectors, 2]
